@@ -11,11 +11,12 @@ gleam_stdlib = ">= 0.48.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
-gluegun = { path = "../gluegun" }
+gluegun = { git = "https://github.com/tylerbutler/gluegun.git", ref = "532af1ac0308ff93c8a957467dbb638859593c93" }
 roost = { path = "../roost" }
 
 [dev-dependencies]
 startest = ">= 0.8.0 and < 1.0.0"
-beryl = { path = "../beryl" }
+beryl = { git = "https://github.com/tylerbutler/beryl.git", ref = "be1550b40c72f49650267aacc45130982e4b04bc" }
 mist = ">= 6.0.0 and < 7.0.0"
 gleam_http = ">= 4.3.0 and < 5.0.0"
+phoenix_channel_fixtures = { git = "https://github.com/tylerbutler/phoenix_channel_fixtures.git", ref = "7daccb856d17db6278980277237c201b2acdcdf1" }
