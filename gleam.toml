@@ -1,0 +1,21 @@
+name = "aquamarine"
+version = "0.1.0"
+description = "Protocol-agnostic Beryl-style channel client runtime for Gleam"
+licences = ["MIT"]
+repository = { type = "github", user = "tylerbutler", repo = "aquamarine" }
+gleam = ">= 1.7.0"
+target = "erlang"
+
+[dependencies]
+gleam_stdlib = ">= 0.48.0 and < 2.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
+gluegun = { path = "../gluegun" }
+roost = { path = "../roost" }
+
+[dev-dependencies]
+startest = ">= 0.8.0 and < 1.0.0"
+beryl = { path = "../beryl" }
+mist = ">= 6.0.0 and < 7.0.0"
+gleam_http = ">= 4.3.0 and < 5.0.0"
