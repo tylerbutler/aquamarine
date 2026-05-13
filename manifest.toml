@@ -30,7 +30,7 @@ packages = [
   { name = "logging", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "logging", source = "hex", outer_checksum = "BC5F18CE5DD9686100229FE5409BDC3DD5C46D5A7DF2F804AD2D8F0DD6C5060E" },
   { name = "mist", version = "6.0.2", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "gramps", "hpack_erl", "logging"], otp_app = "mist", source = "hex", outer_checksum = "6B03DEEA38A02F276333CB27B53B16D3D45BD741B89599085A601BAF635F2006" },
   { name = "phoenix_channel_fixtures", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/phoenix_channel_fixtures.git", commit = "7daccb856d17db6278980277237c201b2acdcdf1" },
-  { name = "roost", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "local", path = "../roost" },
+  { name = "roost", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/roost.git", commit = "0d2cc70fd66399c009012bb6beeb1be582831826" },
   { name = "simplifile", version = "2.4.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "7C18AFA4FED0B4CE1FA5B0B4BAC1FA1744427054EA993565F6F3F82E5453170D" },
   { name = "snag", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "snag", source = "hex", outer_checksum = "274F41D6C3ECF99F7686FDCE54183333E41D2C1CA5A3A673F9A8B2C7A4401077" },
   { name = "startest", version = "0.8.0", build_tools = ["gleam"], requirements = ["argv", "bigben", "exception", "gleam_community_ansi", "gleam_erlang", "gleam_javascript", "gleam_regexp", "gleam_stdlib", "gleam_time", "glint", "simplifile", "tom"], otp_app = "startest", source = "hex", outer_checksum = "47362F1D9DFEFC2F81C590F73A5BFBE902F427408EFBFB48765A05512AED02DC" },
@@ -47,5 +47,5 @@ gleam_stdlib = { version = ">= 0.48.0 and < 2.0.0" }
 gluegun = { git = "https://github.com/tylerbutler/gluegun.git", ref = "532af1ac0308ff93c8a957467dbb638859593c93" }
 mist = { version = ">= 6.0.0 and < 7.0.0" }
 phoenix_channel_fixtures = { git = "https://github.com/tylerbutler/phoenix_channel_fixtures.git", ref = "7daccb856d17db6278980277237c201b2acdcdf1" }
-roost = { path = "../roost" }
+roost = { git = "https://github.com/tylerbutler/roost.git", ref = "0d2cc70fd66399c009012bb6beeb1be582831826" }
 startest = { version = ">= 0.8.0 and < 1.0.0" }
