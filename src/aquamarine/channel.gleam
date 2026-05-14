@@ -20,6 +20,7 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{Some}
 import gleam/result
+import gluegun/error as gluegun_error
 import gluegun/message
 import gluegun/websocket
 
@@ -52,7 +53,7 @@ pub fn connect(
 ) -> Result(Channel, AquamarineError) {
   use socket <- result.try(
     websocket.connect(host:, port:, path:, options: websocket.options())
-    |> result.map_error(error.from_gluegun),
+    |> result.map_error(from_gluegun),
   )
 
   use counter <- result.try(start_counter(socket))
@@ -111,7 +112,7 @@ pub fn push(
       payload,
     )
   websocket.send_text(channel.socket, text)
-  |> result.map_error(error.from_gluegun)
+  |> result.map_error(from_gluegun)
 }
 
 /// Receive the next inbound frame on the channel.
@@ -126,7 +127,7 @@ pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
 fn do_receive(channel: Channel) -> Result(Incoming, AquamarineError) {
   use raw <- result.try(
     websocket.receive_app_frame(channel.socket)
-    |> result.map_error(error.from_gluegun),
+    |> result.map_error(from_gluegun),
   )
 
   case raw {
@@ -162,7 +163,7 @@ pub fn close(channel: Channel) -> Result(Nil, AquamarineError) {
   heartbeat.stop(channel.heartbeat)
   ref.stop(channel.counter)
   websocket.close(channel.socket)
-  |> result.map_error(error.from_gluegun)
+  |> result.map_error(from_gluegun)
 }
 
 fn cleanup_connect(socket: websocket.Socket, counter: ref.Counter) -> Nil {
@@ -205,7 +206,7 @@ fn send_join(
     Ok(_) -> Ok(Nil)
     Error(err) -> {
       cleanup_connect(socket, counter)
-      Error(error.from_gluegun(err))
+      Error(from_gluegun(err))
     }
   }
 }
@@ -247,7 +248,7 @@ fn await_join_reply(
 ) -> Result(Nil, AquamarineError) {
   use raw <- result.try(
     websocket.receive_app_frame(socket)
-    |> result.map_error(error.from_gluegun),
+    |> result.map_error(from_gluegun),
   )
 
   case raw {
@@ -287,4 +288,24 @@ fn decode_reply_status(payload: Dynamic) -> Result(String, Nil) {
   }
   decode.run(payload, decoder)
   |> result.map_error(fn(_) { Nil })
+}
+
+fn from_gluegun(err: gluegun_error.GluegunError) -> AquamarineError {
+  case err {
+    gluegun_error.Timeout -> error.Transport(error.Timeout)
+    gluegun_error.ConnectionDown(reason) ->
+      error.Transport(error.ConnectionDown(reason))
+    gluegun_error.ConnectionError(reason) ->
+      error.Transport(error.ConnectionError(reason))
+    gluegun_error.StreamError(reason) ->
+      error.Transport(error.StreamError(reason))
+    gluegun_error.InvalidOptions(reason) ->
+      error.Transport(error.InvalidOptions(reason))
+    gluegun_error.InvalidMessage(reason) ->
+      error.Transport(error.InvalidMessage(reason))
+    gluegun_error.ErlangError(reason) ->
+      error.Transport(error.ErlangError(reason))
+    gluegun_error.DecodeError(reason) ->
+      error.Transport(error.DecodeError(reason))
+  }
 }

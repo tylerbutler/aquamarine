@@ -1,16 +1,25 @@
 //// Typed error surface for aquamarine.
 ////
 //// All public operations return `Result(_, AquamarineError)`. Transport-level
-//// failures from Gluegun are wrapped in `Transport`; channel-level failures
-//// get their own variants.
+//// failures are classified into Aquamarine-owned variants; channel-level
+//// failures get their own variants.
 
 import aquamarine/codec
-import gluegun/error as gluegun
+
+pub type TransportError {
+  Timeout
+  ConnectionDown(reason: String)
+  ConnectionError(reason: String)
+  StreamError(reason: String)
+  InvalidOptions(reason: String)
+  InvalidMessage(reason: String)
+  ErlangError(reason: String)
+  DecodeError(reason: String)
+}
 
 pub type AquamarineError {
-  /// Underlying WebSocket transport failure from Gluegun (connect, send,
-  /// receive, close).
-  Transport(gluegun.GluegunError)
+  /// Underlying WebSocket transport failure (connect, send, receive, close).
+  Transport(TransportError)
   /// The server rejected the join with the given reason.
   JoinRejected(reason: String)
   /// The server closed the channel.
@@ -20,9 +29,4 @@ pub type AquamarineError {
   /// Waited for a reply matching an outbound ref but it never arrived within
   /// the configured timeout.
   ReplyTimeout
-}
-
-/// Lift a Gluegun error into an `AquamarineError`.
-pub fn from_gluegun(err: gluegun.GluegunError) -> AquamarineError {
-  Transport(err)
 }
