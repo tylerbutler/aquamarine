@@ -1,35 +1,33 @@
 //// Channel client lifecycle.
 ////
-//// A `Channel` wraps a Gluegun WebSocket socket joined to a single topic,
-//// plus the codec, ref counter, and background heartbeat needed to keep the
-//// channel healthy.
+//// A `Channel` wraps a WebSocket transport joined to a single topic, plus the
+//// codec, ref counter, and background heartbeat needed to keep the channel
+//// healthy.
 ////
 //// ## Process ownership
 ////
-//// The socket is owned by the process that called [`connect`](#connect).
+//// The transport is owned by the process that called [`connect`](#connect).
 //// Only that process may call [`receive`](#receive). [`push`](#push) and
-//// [`close`](#close) are safe to call from any process, since Gun's
-//// `ws_send` is fire-and-forget.
+//// [`close`](#close) are safe to call from any process, since the underlying
+//// `send_text` is fire-and-forget.
 
 import aquamarine/codec.{type Codec, type Incoming}
 import aquamarine/error.{type AquamarineError}
 import aquamarine/heartbeat
 import aquamarine/ref
+import aquamarine/transport.{type Connector, type Transport}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{Some}
 import gleam/result
-import gluegun/error as gluegun_error
-import gluegun/message
-import gluegun/websocket
 
 /// Default heartbeat interval, matching the Phoenix JS client.
 const default_heartbeat_ms: Int = 30_000
 
 pub opaque type Channel {
   Channel(
-    socket: websocket.Socket,
+    transport: Transport,
     topic: String,
     join_ref: String,
     counter: ref.Counter,
@@ -51,37 +49,58 @@ pub fn connect(
   payload payload: json.Json,
   codec codec: Codec,
 ) -> Result(Channel, AquamarineError) {
-  use socket <- result.try(
-    websocket.connect(host:, port:, path:, options: websocket.options())
-    |> result.map_error(from_gluegun),
+  connect_with(
+    transport.gluegun_connector(host:, port:, path:),
+    topic,
+    payload,
+    codec,
+    default_heartbeat_ms,
   )
+}
 
-  use counter <- result.try(start_counter(socket))
+/// Like [`connect`](#connect) but takes a `Connector` and an explicit
+/// heartbeat interval. Used by tests to plug in an in-memory transport and a
+/// short heartbeat, and by the public `connect` to wire up a Gluegun-backed
+/// transport with the production interval.
+@internal
+pub fn connect_with(
+  connector: Connector,
+  topic: String,
+  payload: json.Json,
+  codec: Codec,
+  heartbeat_ms: Int,
+) -> Result(Channel, AquamarineError) {
+  use tx <- result.try(connector())
 
-  use join_ref <- result.try(next_join_ref(socket, counter))
+  use counter <- result.try(start_counter(tx))
+
+  use join_ref <- result.try(next_join_ref(tx, counter))
   let join_frame = codec.encode_join(join_ref, topic, payload)
 
-  use _ <- result.try(send_join(socket, counter, join_frame))
+  use _ <- result.try(send_join(tx, counter, join_frame))
 
   use _ <- result.try(await_join_reply_with_cleanup(
-    socket,
+    tx,
     counter,
     join_ref,
     codec,
   ))
 
-  // Send queue + receive happen in the caller's process. The heartbeat
-  // actor runs separately and only sends, which Gluegun allows from any
-  // process.
   let send_fn = fn(text: String) -> Result(Nil, Nil) {
-    websocket.send_text(socket, text)
+    tx.send_text(text)
     |> result.map_error(fn(_) { Nil })
   }
 
-  use hb <- result.try(start_heartbeat(socket, counter, send_fn, codec))
+  use hb <- result.try(start_heartbeat(
+    tx,
+    counter,
+    send_fn,
+    codec,
+    heartbeat_ms,
+  ))
 
   Ok(Channel(
-    socket: socket,
+    transport: tx,
     topic: topic,
     join_ref: join_ref,
     counter: counter,
@@ -92,8 +111,8 @@ pub fn connect(
 
 /// Push an event into the channel. Refs are assigned automatically.
 ///
-/// Returns `Ok(Nil)` once the frame is handed to Gun. This does **not** wait
-/// for a reply.
+/// Returns `Ok(Nil)` once the frame is handed to the transport. This does
+/// **not** wait for a reply.
 pub fn push(
   channel: Channel,
   event: String,
@@ -111,8 +130,7 @@ pub fn push(
       event,
       payload,
     )
-  websocket.send_text(channel.socket, text)
-  |> result.map_error(from_gluegun)
+  channel.transport.send_text(text)
 }
 
 /// Receive the next inbound frame on the channel.
@@ -125,20 +143,16 @@ pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
 }
 
 fn do_receive(channel: Channel) -> Result(Incoming, AquamarineError) {
-  use raw <- result.try(
-    websocket.receive_app_frame(channel.socket)
-    |> result.map_error(from_gluegun),
-  )
+  use frame <- result.try(channel.transport.receive())
 
-  case raw {
-    message.Text(text) ->
+  case frame {
+    transport.Text(text) ->
       case channel.codec.decode(text) {
         Ok(incoming) -> handle_incoming(channel, incoming)
         Error(err) -> Error(error.DecodeFailed(err))
       }
-    message.Binary(_) -> do_receive(channel)
-    message.Close | message.CloseWithReason(_, _) -> Error(error.ChannelClosed)
-    message.Ping(_) | message.Pong(_) -> do_receive(channel)
+    transport.Binary(_) -> do_receive(channel)
+    transport.Closed -> Error(error.ChannelClosed)
   }
 }
 
@@ -157,113 +171,108 @@ fn handle_incoming(
   }
 }
 
-/// Close the channel and underlying WebSocket. The heartbeat actor is stopped
-/// first.
+/// Close the channel and underlying transport. The heartbeat and counter
+/// actors are stopped first.
 pub fn close(channel: Channel) -> Result(Nil, AquamarineError) {
   heartbeat.stop(channel.heartbeat)
   ref.stop(channel.counter)
-  websocket.close(channel.socket)
-  |> result.map_error(from_gluegun)
+  channel.transport.close()
 }
 
-fn cleanup_connect(socket: websocket.Socket, counter: ref.Counter) -> Nil {
+fn cleanup_connect(tx: Transport, counter: ref.Counter) -> Nil {
   ref.stop(counter)
-  let _ = websocket.close(socket)
+  let _ = tx.close()
   Nil
 }
 
-fn start_counter(
-  socket: websocket.Socket,
-) -> Result(ref.Counter, AquamarineError) {
+fn start_counter(tx: Transport) -> Result(ref.Counter, AquamarineError) {
   case ref.start() {
     Ok(counter) -> Ok(counter)
     Error(_) -> {
-      let _ = websocket.close(socket)
+      let _ = tx.close()
       Error(error.ReplyTimeout)
     }
   }
 }
 
 fn next_join_ref(
-  socket: websocket.Socket,
+  tx: Transport,
   counter: ref.Counter,
 ) -> Result(String, AquamarineError) {
   case ref.next(counter) {
     Ok(join_ref) -> Ok(join_ref)
     Error(_) -> {
-      cleanup_connect(socket, counter)
+      cleanup_connect(tx, counter)
       Error(error.ReplyTimeout)
     }
   }
 }
 
 fn send_join(
-  socket: websocket.Socket,
+  tx: Transport,
   counter: ref.Counter,
   join_frame: String,
 ) -> Result(Nil, AquamarineError) {
-  case websocket.send_text(socket, join_frame) {
+  case tx.send_text(join_frame) {
     Ok(_) -> Ok(Nil)
     Error(err) -> {
-      cleanup_connect(socket, counter)
-      Error(from_gluegun(err))
+      cleanup_connect(tx, counter)
+      Error(err)
     }
   }
 }
 
 fn await_join_reply_with_cleanup(
-  socket: websocket.Socket,
+  tx: Transport,
   counter: ref.Counter,
   join_ref: String,
   codec: Codec,
 ) -> Result(Nil, AquamarineError) {
-  case await_join_reply(socket, join_ref, codec) {
+  case await_join_reply(tx, join_ref, codec) {
     Ok(_) -> Ok(Nil)
     Error(err) -> {
-      cleanup_connect(socket, counter)
+      cleanup_connect(tx, counter)
       Error(err)
     }
   }
 }
 
 fn start_heartbeat(
-  socket: websocket.Socket,
+  tx: Transport,
   counter: ref.Counter,
   send_fn: fn(String) -> Result(Nil, Nil),
   codec: Codec,
+  interval_ms: Int,
 ) -> Result(heartbeat.Heartbeat, AquamarineError) {
-  case heartbeat.start(send_fn, default_heartbeat_ms, counter, codec) {
+  case heartbeat.start(send_fn, interval_ms, counter, codec) {
     Ok(hb) -> Ok(hb)
     Error(_) -> {
-      cleanup_connect(socket, counter)
+      cleanup_connect(tx, counter)
       Error(error.ReplyTimeout)
     }
   }
 }
 
 fn await_join_reply(
-  socket: websocket.Socket,
+  tx: Transport,
   join_ref: String,
   codec: Codec,
 ) -> Result(Nil, AquamarineError) {
-  use raw <- result.try(
-    websocket.receive_app_frame(socket)
-    |> result.map_error(from_gluegun),
-  )
+  use frame <- result.try(tx.receive())
 
-  case raw {
-    message.Text(text) ->
+  case frame {
+    transport.Text(text) ->
       case codec.decode(text) {
-        Ok(incoming) -> match_join_reply(socket, join_ref, incoming, codec)
+        Ok(incoming) -> match_join_reply(tx, join_ref, incoming, codec)
         Error(err) -> Error(error.DecodeFailed(err))
       }
-    message.Close | message.CloseWithReason(_, _) -> Error(error.ChannelClosed)
-    _ -> await_join_reply(socket, join_ref, codec)
+    transport.Closed -> Error(error.ChannelClosed)
+    transport.Binary(_) -> await_join_reply(tx, join_ref, codec)
   }
 }
 
 fn match_join_reply(
-  socket: websocket.Socket,
+  tx: Transport,
   join_ref: String,
   incoming: Incoming,
   codec: Codec,
@@ -277,7 +286,7 @@ fn match_join_reply(
         Ok(other) -> Error(error.JoinRejected(other))
         Error(_) -> Error(error.JoinRejected("malformed reply"))
       }
-    _, _ -> await_join_reply(socket, join_ref, codec)
+    _, _ -> await_join_reply(tx, join_ref, codec)
   }
 }
 
@@ -288,24 +297,4 @@ fn decode_reply_status(payload: Dynamic) -> Result(String, Nil) {
   }
   decode.run(payload, decoder)
   |> result.map_error(fn(_) { Nil })
-}
-
-fn from_gluegun(err: gluegun_error.GluegunError) -> AquamarineError {
-  case err {
-    gluegun_error.Timeout -> error.Transport(error.Timeout)
-    gluegun_error.ConnectionDown(reason) ->
-      error.Transport(error.ConnectionDown(reason))
-    gluegun_error.ConnectionError(reason) ->
-      error.Transport(error.ConnectionError(reason))
-    gluegun_error.StreamError(reason) ->
-      error.Transport(error.StreamError(reason))
-    gluegun_error.InvalidOptions(reason) ->
-      error.Transport(error.InvalidOptions(reason))
-    gluegun_error.InvalidMessage(reason) ->
-      error.Transport(error.InvalidMessage(reason))
-    gluegun_error.ErlangError(reason) ->
-      error.Transport(error.ErlangError(reason))
-    gluegun_error.DecodeError(reason) ->
-      error.Transport(error.DecodeError(reason))
-  }
 }
