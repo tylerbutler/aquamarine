@@ -117,7 +117,17 @@ fn start_beryl() -> beryl.Channels {
       bchannel.JoinOk(reply: Some(json.object([])), socket: sock)
     })
     |> bchannel.with_handle_in(fn(_event, payload, sock) {
-      bchannel.Reply(event: "reply", payload: payload, socket: sock)
+      let body = case
+        decode.run(payload, decode.field("body", decode.string, decode.success))
+      {
+        Ok(b) -> b
+        Error(_) -> ""
+      }
+      bchannel.Reply(
+        event: "reply",
+        payload: json.object([#("body", json.string(body))]),
+        socket: sock,
+      )
     })
   let assert Ok(_) = beryl.register(channels, "test:echo", echo_channel)
 
@@ -134,7 +144,7 @@ fn start_mist(channels: beryl.Channels) {
   let handler = fn(req) {
     mist_transport.upgrade(
       req,
-      channels.coordinator,
+      channels,
       mist_transport.default_config(test_path),
       fn() {
         response.new(404)
