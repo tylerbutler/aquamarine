@@ -1,0 +1,45 @@
+/* Aquamarine color scheme — derived from the logo:
+ * - Teal/aquamarine primary accent (logo body & wings)
+ * - Deep navy neutral ramp (logo outline)
+ * - Crimson/raspberry secondary highlight (logo inner wings)
+ */
+
+/* Dark mode (default). */
+:root {
+	--sl-color-accent-low: #0e3f47;
+	--sl-color-accent: #3fbfb5;
+	--sl-color-accent-high: #b8f0ea;
+
+	--sl-color-white: #f4fafb;
+	--sl-color-gray-1: #e3f0f4;
+	--sl-color-gray-2: #b8d2de;
+	--sl-color-gray-3: #6b8a9e;
+	--sl-color-gray-4: #355569;
+	--sl-color-gray-5: #1b3349;
+	--sl-color-gray-6: #122638;
+	--sl-color-black: #0b1a26;
+
+	/* Aquamarine-specific: crimson highlight, used sparingly. */
+	--aqua-color-crimson: #e63462;
+	--aqua-color-crimson-soft: #ff6b8b;
+}
+
+/* Light mode. */
+:root[data-theme="light"] {
+	--sl-color-accent-low: #d6f3ef;
+	--sl-color-accent: #1e8e84;
+	--sl-color-accent-high: #0e3f47;
+
+	--sl-color-white: #0b1a26;
+	--sl-color-gray-1: #122638;
+	--sl-color-gray-2: #1b3349;
+	--sl-color-gray-3: #355569;
+	--sl-color-gray-4: #6b8a9e;
+	--sl-color-gray-5: #b8d2de;
+	--sl-color-gray-6: #e3f0f4;
+	--sl-color-gray-7: #f4fafb;
+	--sl-color-black: #ffffff;
+
+	--aqua-color-crimson: #c01e4a;
+	--aqua-color-crimson-soft: #e63462;
+}

@@ -1,0 +1,76 @@
+---
+title: Aquamarine
+description: Protocol-agnostic Beryl-style WebSocket channel client for Gleam on the BEAM.
+template: splash
+hero:
+  tagline: Protocol-agnostic Beryl-style WebSocket channel client for Gleam on the BEAM.
+  image:
+    file: ../../assets/aquamarine-logo.webp
+    alt: Aquamarine logo
+  actions:
+    - text: Get started
+      link: /getting-started/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/tylerbutler/aquamarine
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+## What is Aquamarine?
+
+Aquamarine is the **client runtime** for Beryl-style WebSocket channels in
+Gleam. It owns the lifecycle — connecting, joining a topic, heartbeats,
+ref counting, and orderly shutdown — and delegates the on-the-wire format
+to a pluggable [`Codec`](/guides/codecs/).
+
+The bundled [`aquamarine/phoenix`](/guides/phoenix/) codec speaks the
+Phoenix Channels protocol, so Aquamarine talks to
+[Beryl](https://github.com/tylerbutler/beryl) servers and to vanilla
+Phoenix Channels endpoints out of the box.
+
+## Install
+
+```sh
+gleam add aquamarine
+```
+
+## Quick taste
+
+```gleam
+import aquamarine
+import aquamarine/phoenix
+import gleam/json
+
+let assert Ok(channel) =
+  aquamarine.connect(
+    host: "localhost",
+    port: 4000,
+    path: "/socket/websocket",
+    topic: "room:lobby",
+    payload: json.object([]),
+    codec: phoenix.codec(),
+  )
+```
+
+<CardGrid>
+  <Card title="Getting started" icon="rocket">
+    Install, connect, push, and receive in a handful of lines.
+    [Start here →](/getting-started/)
+  </Card>
+  <Card title="Phoenix & Beryl" icon="puzzle">
+    Configure the bundled codec to talk to Phoenix Channels and Beryl.
+    [Read the guide →](/guides/phoenix/)
+  </Card>
+  <Card title="Ecosystem" icon="seti:default">
+    See where Aquamarine sits among Beryl, Gluegun, and Roost.
+    [View the map →](/reference/ecosystem/)
+  </Card>
+  <Card title="API overview" icon="open-book">
+    Four functions: `connect`, `push`, `receive`, `close`.
+    [Browse the API →](/reference/api/)
+  </Card>
+</CardGrid>

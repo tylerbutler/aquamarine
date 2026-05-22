@@ -1,0 +1,41 @@
+{
+	"name": "aquamarine-docs",
+	"version": "0.0.1",
+	"private": true,
+	"packageManager": "pnpm@10.33.4",
+	"bugs": "https://github.com/tylerbutler/aquamarine/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tylerbutler/aquamarine.git",
+		"directory": "website"
+	},
+	"license": "MIT",
+	"author": "Tyler Butler <tyler@tylerbutler.com>",
+	"type": "module",
+	"scripts": {
+		"astro": "astro",
+		"build": "astro build",
+		"check:astro": "astro check",
+		"clean": "rimraf dist *.tsbuildinfo *.done.build.log .astro",
+		"dev": "astro dev",
+		"preview": "astro preview",
+		"start": "astro dev"
+	},
+	"dependencies": {
+		"@astrojs/check": "^0.9.8",
+		"@astrojs/starlight": "^0.39.2",
+		"@fontsource/metropolis": "^5.2.5",
+		"astro": "^6.1.4",
+		"astro-mermaid": "^2.0.1",
+		"mermaid": "^11.15.0",
+		"sharp": "^0.34.5",
+		"starlight-heading-badges": "^0.7.0",
+		"starlight-links-validator": "^0.24.0",
+		"starlight-llms-txt": "^0.10.0",
+		"typescript": "~6.0.2"
+	},
+	"devDependencies": {
+		"@fec/remark-a11y-emoji": "^4.0.2",
+		"rimraf": "^6.1.3"
+	}
+}
