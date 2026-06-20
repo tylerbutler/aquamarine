@@ -190,7 +190,7 @@ fn start_counter(tx: Transport) -> Result(ref.Counter, AquamarineError) {
     Ok(counter) -> Ok(counter)
     Error(_) -> {
       let _ = tx.close()
-      Error(error.ReplyTimeout)
+      Error(error.InternalError("failed to start ref counter actor"))
     }
   }
 }
@@ -203,7 +203,7 @@ fn next_join_ref(
     Ok(join_ref) -> Ok(join_ref)
     Error(_) -> {
       cleanup_connect(tx, counter)
-      Error(error.ReplyTimeout)
+      Error(error.InternalError("failed to obtain join ref from counter"))
     }
   }
 }
@@ -248,7 +248,7 @@ fn start_heartbeat(
     Ok(hb) -> Ok(hb)
     Error(_) -> {
       cleanup_connect(tx, counter)
-      Error(error.ReplyTimeout)
+      Error(error.InternalError("failed to start heartbeat actor"))
     }
   }
 }
