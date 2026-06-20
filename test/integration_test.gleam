@@ -117,12 +117,12 @@ fn start_beryl() -> beryl.Channels {
       bchannel.JoinOk(reply: Some(json.object([])), socket: sock)
     })
     |> bchannel.with_handle_in(fn(_event, payload, sock) {
-      let body = case
-        decode.run(payload, decode.field("body", decode.string, decode.success))
-      {
-        Ok(b) -> b
-        Error(_) -> ""
-      }
+      let body =
+        bchannel.decode_payload(payload, {
+          use body <- decode.field("body", decode.string)
+          decode.success(body)
+        })
+        |> result.unwrap("")
       bchannel.Reply(
         event: "reply",
         payload: json.object([#("body", json.string(body))]),
