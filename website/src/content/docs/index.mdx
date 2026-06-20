@@ -3,7 +3,7 @@ title: Aquamarine
 description: Protocol-agnostic Beryl-style WebSocket channel client for Gleam on the BEAM.
 template: splash
 hero:
-  tagline: Protocol-agnostic Beryl-style WebSocket channel client for Gleam on the BEAM.
+  tagline: Connect Gleam processes to Phoenix Channels with four functions, explicit errors, and pluggable codecs.
   image:
     file: ../../assets/aquamarine-logo.webp
     alt: Aquamarine logo
@@ -18,56 +18,76 @@ hero:
       variant: minimal
 ---
 
-import { Card, CardGrid } from "@astrojs/starlight/components";
+import { Badge, Card, CardGrid } from "@astrojs/starlight/components";
+
+<Badge text="v0.1.0" /> Pre-1.0 package. Browse the
+[generated API docs](https://hexdocs.pm/aquamarine/) when you need exact
+signatures.
 
 ## What is Aquamarine?
 
 Aquamarine is the **client runtime** for Beryl-style WebSocket channels in
 Gleam. It owns the lifecycle — connecting, joining a topic, heartbeats,
 ref counting, and orderly shutdown — and delegates the on-the-wire format
-to a pluggable [`Codec`](/guides/codecs/).
+to a pluggable [`Codec`](/guides/codecs/) so the runtime stays separate
+from protocol-specific frames.
 
 The bundled [`aquamarine/phoenix`](/guides/phoenix/) codec speaks the
 Phoenix Channels protocol, so Aquamarine talks to
 [Beryl](https://github.com/tylerbutler/beryl) servers and to vanilla
 Phoenix Channels endpoints out of the box.
 
-## Install
+## API shape
 
-```sh
-gleam add aquamarine
-```
-
-## Quick taste
+Four functions, one `case`: connect to a Phoenix-compatible endpoint and
+handle failures through the same typed error surface used by every public
+operation.
 
 ```gleam
 import aquamarine
 import aquamarine/phoenix
+import gleam/io
 import gleam/json
 
-let assert Ok(channel) =
-  aquamarine.connect(
-    host: "localhost",
-    port: 4000,
-    path: "/socket/websocket",
-    topic: "room:lobby",
-    payload: json.object([]),
-    codec: phoenix.codec(),
-  )
+case aquamarine.connect(
+  host: "localhost",
+  port: 4000,
+  path: "/socket/websocket",
+  topic: "room:lobby",
+  payload: json.object([]),
+  codec: phoenix.codec(),
+) {
+  Ok(channel) -> {
+    // ... use the channel ...
+    let _ = aquamarine.close(channel)
+    Nil
+  }
+
+  Error(error) -> {
+    // See the Error handling guide for each AquamarineError variant.
+    io.debug(error)
+    Nil
+  }
+}
 ```
+
+See [Error handling](/guides/error-handling/) for the
+`AquamarineError` variants returned by `connect`, `push`, `receive`, and
+`close`.
 
 <CardGrid>
   <Card title="Getting started" icon="rocket">
-    Install, connect, push, and receive in a handful of lines.
+    Install, connect, push, receive, and close.
     [Start here →](/getting-started/)
+  </Card>
+  <Card title="Error handling" icon="information">
+    Handle transport failures, rejected joins, closed channels, decode
+    failures, and startup timeouts.
+    [Handle errors →](/guides/error-handling/)
   </Card>
   <Card title="Phoenix & Beryl" icon="puzzle">
     Configure the bundled codec to talk to Phoenix Channels and Beryl.
     [Read the guide →](/guides/phoenix/)
-  </Card>
-  <Card title="Ecosystem" icon="seti:default">
-    See where Aquamarine sits among Beryl, Gluegun, and Roost.
-    [View the map →](/reference/ecosystem/)
   </Card>
   <Card title="API overview" icon="open-book">
     Four functions: `connect`, `push`, `receive`, `close`.

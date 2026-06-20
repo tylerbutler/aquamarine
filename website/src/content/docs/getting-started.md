@@ -28,22 +28,29 @@ a `Channel` handle that you keep for the rest of the session.
 ```gleam
 import aquamarine
 import aquamarine/phoenix
+import gleam/io
 import gleam/json
 
 pub fn main() {
-  let assert Ok(channel) =
-    aquamarine.connect(
-      host: "localhost",
-      port: 4000,
-      path: "/socket/websocket",
-      topic: "room:lobby",
-      payload: json.object([]),
-      codec: phoenix.codec(),
-    )
+  case aquamarine.connect(
+    host: "localhost",
+    port: 4000,
+    path: "/socket/websocket",
+    topic: "room:lobby",
+    payload: json.object([]),
+    codec: phoenix.codec(),
+  ) {
+    Ok(channel) -> {
+      // ... use the channel ...
+      let _ = aquamarine.close(channel)
+      Nil
+    }
 
-  // ... use the channel ...
-
-  let _ = aquamarine.close(channel)
+    Error(error) -> {
+      io.debug(error)
+      Nil
+    }
+  }
 }
 ```
 
