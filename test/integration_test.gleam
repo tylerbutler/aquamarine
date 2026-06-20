@@ -118,7 +118,10 @@ fn start_beryl() -> beryl.Channels {
     })
     |> bchannel.with_handle_in(fn(_event, payload, sock) {
       let body = case
-        decode.run(payload, decode.field("body", decode.string, decode.success))
+        json.parse(
+          json.to_string(payload),
+          decode.field("body", decode.string, decode.success),
+        )
       {
         Ok(b) -> b
         Error(_) -> ""
@@ -144,7 +147,7 @@ fn start_mist(channels: beryl.Channels) {
   let handler = fn(req) {
     mist_transport.upgrade(
       req,
-      channels,
+      channels.coordinator,
       mist_transport.default_config(test_path),
       fn() {
         response.new(404)
