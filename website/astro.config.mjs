@@ -1,7 +1,6 @@
 import starlight from "@astrojs/starlight";
 import a11yEmoji from "@fec/remark-a11y-emoji";
 import { defineConfig } from "astro/config";
-import mermaid from "astro-mermaid";
 import starlightHeadingBadges from "starlight-heading-badges";
 import starlightLinksValidator from "starlight-links-validator";
 import starlightLlmsTxt from "starlight-llms-txt";
@@ -14,9 +13,6 @@ export default defineConfig({
 		prefetchAll: true,
 	},
 	integrations: [
-		// astro-mermaid must come before starlight so its remark plugin runs
-		// against fenced ```mermaid blocks before Starlight processes them.
-		mermaid({ autoTheme: true }),
 		starlight({
 			title: "Aquamarine",
 			editLink: {
@@ -31,8 +27,7 @@ export default defineConfig({
 			},
 			favicon: "favicon.png",
 			customCss: [
-				"@fontsource/metropolis/400.css",
-				"@fontsource/metropolis/600.css",
+				"@fontsource-variable/commissioner/wght.css",
 				"./src/styles/fonts.css",
 				"./src/styles/custom.css",
 			],

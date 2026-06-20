@@ -3,7 +3,7 @@ title: Aquamarine
 description: Protocol-agnostic Beryl-style WebSocket channel client for Gleam on the BEAM.
 template: splash
 hero:
-  tagline: Connect Gleam processes to Phoenix Channels with four functions, explicit errors, and pluggable codecs.
+  tagline: "A clear channel runtime for Gleam: four public functions, typed failures, and protocol-specific codecs at the edge."
   image:
     file: ../../assets/aquamarine-logo.webp
     alt: Aquamarine logo
@@ -18,35 +18,74 @@ hero:
       variant: minimal
 ---
 
-import { Badge, Card, CardGrid } from "@astrojs/starlight/components";
+import { Badge } from "@astrojs/starlight/components";
 
 <Badge text="v0.1.0" /> Pre-1.0 package. Browse the
 [generated API docs](https://hexdocs.pm/aquamarine/) when you need exact
 signatures.
 
-## What is Aquamarine?
+<div className="aqua-home">
+  <section className="aqua-intro">
+    <div className="aqua-copy">
+      Aquamarine is the <strong>client runtime</strong> for Beryl-style
+      WebSocket channels in Gleam. It owns the process lifecycle and keeps
+      the wire protocol behind a pluggable <a href="/guides/codecs/">Codec</a>.
+    </div>
+    <div className="aqua-copy">
+      Use the bundled <a href="/guides/phoenix/">aquamarine/phoenix</a> codec
+      for Phoenix Channels and <a href="https://github.com/tylerbutler/beryl">Beryl</a>,
+      or provide your own codec without changing the channel runtime.
+    </div>
+  </section>
 
-Aquamarine is the **client runtime** for Beryl-style WebSocket channels in
-Gleam. It owns the lifecycle — connecting, joining a topic, heartbeats,
-ref counting, and orderly shutdown — and delegates the on-the-wire format
-to a pluggable [`Codec`](/guides/codecs/) so the runtime stays separate
-from protocol-specific frames.
+  <section className="aqua-section">
+    <h2>One channel, five moving parts</h2>
+    <div className="aqua-copy">
+      The public API stays small because Aquamarine handles the recurring
+      channel work after the socket opens.
+    </div>
+    <ol className="aqua-lifecycle" aria-label="Aquamarine channel lifecycle">
+      <li className="aqua-lifecycle__step">
+        <code>connect</code>
+        <strong>Open and join</strong>
+        <span>Start the WebSocket, send the join frame, and wait for the matching reply.</span>
+      </li>
+      <li className="aqua-lifecycle__step">
+        <code>refs</code>
+        <strong>Count in order</strong>
+        <span>A small actor issues monotonic refs for pushes and heartbeats.</span>
+      </li>
+      <li className="aqua-lifecycle__step">
+        <code>heartbeat</code>
+        <strong>Keep the channel alive</strong>
+        <span>The heartbeat actor uses the same codec boundary as the rest of the runtime.</span>
+      </li>
+      <li className="aqua-lifecycle__step">
+        <code>push / receive</code>
+        <strong>Move application frames</strong>
+        <span>Outbound events are encoded; inbound noise and heartbeat replies are filtered.</span>
+      </li>
+      <li className="aqua-lifecycle__step">
+        <code>close</code>
+        <strong>Clean up actors</strong>
+        <span>Shutdown stops the heartbeat and ref counter before closing the socket.</span>
+      </li>
+    </ol>
+  </section>
 
-The bundled [`aquamarine/phoenix`](/guides/phoenix/) codec speaks the
-Phoenix Channels protocol, so Aquamarine talks to
-[Beryl](https://github.com/tylerbutler/beryl) servers and to vanilla
-Phoenix Channels endpoints out of the box.
-
-## API shape
-
-Four functions, one `case`: connect to a Phoenix-compatible endpoint and
-handle failures through the same typed error surface used by every public
-operation.
+  <section className="aqua-section">
+    <h2>Four functions, one typed error surface</h2>
+    <div className="aqua-copy">
+      Connect to a Phoenix-compatible endpoint and handle failures through the
+      same <code>AquamarineError</code> variants returned by every public
+      operation.
+    </div>
+  </section>
+</div>
 
 ```gleam
 import aquamarine
 import aquamarine/phoenix
-import gleam/io
 import gleam/json
 
 case aquamarine.connect(
@@ -58,16 +97,12 @@ case aquamarine.connect(
   codec: phoenix.codec(),
 ) {
   Ok(channel) -> {
-    // ... use the channel ...
-    let _ = aquamarine.close(channel)
+    // Push, receive, and close with the same Channel handle.
+    use_channel(channel)
     Nil
   }
 
-  Error(error) -> {
-    // See the Error handling guide for each AquamarineError variant.
-    io.debug(error)
-    Nil
-  }
+  Error(error) -> handle_connect_error(error)
 }
 ```
 
@@ -75,22 +110,30 @@ See [Error handling](/guides/error-handling/) for the
 `AquamarineError` variants returned by `connect`, `push`, `receive`, and
 `close`.
 
-<CardGrid>
-  <Card title="Getting started" icon="rocket">
-    Install, connect, push, receive, and close.
-    [Start here →](/getting-started/)
-  </Card>
-  <Card title="Error handling" icon="information">
-    Handle transport failures, rejected joins, closed channels, decode
-    failures, and startup timeouts.
-    [Handle errors →](/guides/error-handling/)
-  </Card>
-  <Card title="Phoenix & Beryl" icon="puzzle">
-    Configure the bundled codec to talk to Phoenix Channels and Beryl.
-    [Read the guide →](/guides/phoenix/)
-  </Card>
-  <Card title="API overview" icon="open-book">
-    Four functions: `connect`, `push`, `receive`, `close`.
-    [Browse the API →](/reference/api/)
-  </Card>
-</CardGrid>
+<div className="aqua-home">
+  <section className="aqua-section">
+    <h2>Choose your next path</h2>
+    <div className="aqua-paths">
+      <div className="aqua-path">
+        <strong>First connection</strong>
+        <span>Install Aquamarine, open a channel, push, receive, and close.</span>
+        <a href="/getting-started/">Start here -></a>
+      </div>
+      <div className="aqua-path">
+        <strong>Runtime model</strong>
+        <span>Understand ownership, filtering, refs, and cleanup.</span>
+        <a href="/guides/channels/">Read the lifecycle -></a>
+      </div>
+      <div className="aqua-path">
+        <strong>Phoenix and Beryl</strong>
+        <span>Use the bundled codec with Phoenix Channels-compatible servers.</span>
+        <a href="/guides/phoenix/">Wire the codec -></a>
+      </div>
+      <div className="aqua-path">
+        <strong>Errors and API</strong>
+        <span>Handle each failure variant and browse the four-function surface.</span>
+        <a href="/guides/error-handling/">Handle failures -></a>
+      </div>
+    </div>
+  </section>
+</div>

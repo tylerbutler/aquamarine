@@ -10,20 +10,34 @@ neighbours does.
 
 ## Package map
 
-```mermaid
-flowchart LR
-  Beryl["Beryl<br/>Phoenix-compatible channel server"]
-  Aqua["Aquamarine<br/>channel client runtime"]
-  Phx["aquamarine/phoenix<br/>codec adapter"]
-  Glue["Gluegun<br/>WebSocket transport"]
-  Roost["Roost<br/>Phoenix frame types"]
-
-  Aqua --- Phx
-  Aqua --- Glue
-  Phx --- Roost
-  Glue <-->|WebSocket| Beryl
-  Beryl --- Roost
-```
+<div class="aqua-ecosystem-map" role="img" aria-label="Aquamarine connects to Beryl over Gluegun, uses aquamarine/phoenix for Phoenix frames, and shares Roost frame types with Beryl.">
+  <div class="aqua-ecosystem-map__row">
+    <div class="aqua-ecosystem-node">
+      <strong>Beryl</strong>
+      <span>Phoenix-compatible channel server</span>
+    </div>
+    <div class="aqua-ecosystem-node" data-primary="true">
+      <strong>Aquamarine</strong>
+      <span>Channel client runtime</span>
+    </div>
+    <div class="aqua-ecosystem-node">
+      <strong>Gluegun</strong>
+      <span>WebSocket transport</span>
+    </div>
+  </div>
+  <div class="aqua-ecosystem-link">Beryl <-> WebSocket transport <-> Aquamarine</div>
+  <div class="aqua-ecosystem-map__row">
+    <div class="aqua-ecosystem-node">
+      <strong>Roost</strong>
+      <span>Phoenix frame types</span>
+    </div>
+    <div class="aqua-ecosystem-node">
+      <strong>aquamarine/phoenix</strong>
+      <span>Codec adapter</span>
+    </div>
+  </div>
+  <div class="aqua-ecosystem-link">Roost keeps Phoenix frame encoding consistent between Beryl and the bundled codec.</div>
+</div>
 
 ## What each package does
 

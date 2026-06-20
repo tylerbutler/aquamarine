@@ -22,12 +22,14 @@
 	/* Aquamarine-specific: crimson highlight, used sparingly. */
 	--aqua-color-crimson: #e63462;
 	--aqua-color-crimson-soft: #ff6b8b;
+	--aqua-space-tight: clamp(0.75rem, 0.68rem + 0.35vw, 1rem);
+	--aqua-space-section: clamp(2.75rem, 2.05rem + 3.48vw, 5.25rem);
 }
 
 /* Light mode. */
 :root[data-theme="light"] {
 	--sl-color-accent-low: #d6f3ef;
-	--sl-color-accent: #1e8e84;
+	--sl-color-accent: #14786f;
 	--sl-color-accent-high: #0e3f47;
 
 	--sl-color-white: #0b1a26;
@@ -42,4 +44,182 @@
 
 	--aqua-color-crimson: #c01e4a;
 	--aqua-color-crimson-soft: #e63462;
+}
+
+body {
+	font-variation-settings: "wght" 430;
+}
+
+h1,
+h2,
+h3,
+.site-title span {
+	font-variation-settings: "wght" 690;
+	text-wrap: balance;
+}
+
+.sl-markdown-content p,
+.sl-markdown-content li {
+	text-wrap: pretty;
+}
+
+.aqua-home {
+	display: grid;
+	gap: var(--aqua-space-section);
+	margin-block-start: 1.5rem;
+}
+
+.aqua-intro {
+	display: grid;
+	gap: var(--aqua-space-tight);
+	max-width: 68ch;
+}
+
+.aqua-copy {
+	margin: 0;
+	font-size: clamp(1.05rem, 0.99rem + 0.3vw, 1.25rem);
+	line-height: 1.75;
+}
+
+.aqua-copy > p {
+	margin: 0;
+}
+
+.aqua-intro strong {
+	color: var(--sl-color-accent-high);
+	font-variation-settings: "wght" 720;
+}
+
+.aqua-section {
+	display: grid;
+	gap: clamp(1rem, 0.83rem + 0.85vw, 1.6rem);
+}
+
+.aqua-section > h2,
+.aqua-section > p {
+	margin-block: 0;
+}
+
+.aqua-section > .aqua-copy {
+	max-width: 68ch;
+	color: var(--sl-color-gray-2);
+	font-size: 1.02rem;
+	line-height: 1.75;
+}
+
+.aqua-lifecycle {
+	position: relative;
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+	gap: 0.75rem;
+	list-style: none;
+	margin: 0;
+	padding: clamp(0.75rem, 0.54rem + 1.06vw, 1.5rem);
+	border: 1px solid var(--sl-color-gray-5);
+	background:
+		linear-gradient(90deg, transparent 0 49%, var(--sl-color-accent-low) 49% 51%, transparent 51% 100%),
+		var(--sl-color-gray-6);
+}
+
+.aqua-lifecycle__step {
+	display: grid;
+	align-content: start;
+	gap: 0.45rem;
+	min-height: 9rem;
+	padding: 1rem;
+	border: 1px solid var(--sl-color-gray-5);
+	background: var(--sl-color-black);
+}
+
+.aqua-lifecycle__step strong {
+	color: var(--sl-color-white);
+	font-size: 1.08rem;
+	font-variation-settings: "wght" 760;
+}
+
+.aqua-lifecycle__step span {
+	color: var(--sl-color-gray-2);
+	line-height: 1.55;
+}
+
+.aqua-lifecycle__step code {
+	width: fit-content;
+}
+
+.aqua-paths {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+	gap: 1rem;
+}
+
+.aqua-path {
+	display: grid;
+	gap: 0.55rem;
+	padding: 1rem 0 1.1rem;
+	border-block-start: 2px solid var(--sl-color-gray-5);
+}
+
+.aqua-path:first-child {
+	border-block-start-color: var(--sl-color-accent);
+}
+
+.aqua-path strong {
+	color: var(--sl-color-white);
+	font-size: 1.05rem;
+	font-variation-settings: "wght" 720;
+}
+
+.aqua-path span {
+	color: var(--sl-color-gray-2);
+	line-height: 1.55;
+}
+
+.aqua-path a {
+	width: fit-content;
+	font-variation-settings: "wght" 650;
+}
+
+.aqua-ecosystem-map {
+	display: grid;
+	gap: 1rem;
+	padding: clamp(1rem, 0.72rem + 1.4vw, 2rem);
+	border: 1px solid var(--sl-color-gray-5);
+	background: var(--sl-color-gray-6);
+}
+
+.aqua-ecosystem-map__row {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+	gap: 0.75rem;
+	align-items: stretch;
+}
+
+.aqua-ecosystem-node {
+	display: grid;
+	gap: 0.35rem;
+	padding: 0.9rem;
+	border: 1px solid var(--sl-color-gray-5);
+	background: var(--sl-color-black);
+}
+
+.aqua-ecosystem-node[data-primary="true"] {
+	border-color: var(--sl-color-accent);
+	background: var(--sl-color-accent-low);
+}
+
+.aqua-ecosystem-node strong {
+	color: var(--sl-color-white);
+	font-variation-settings: "wght" 730;
+}
+
+.aqua-ecosystem-node span,
+.aqua-ecosystem-link {
+	color: var(--sl-color-gray-2);
+	line-height: 1.5;
+}
+
+.aqua-ecosystem-link {
+	text-align: center;
+	font-size: 0.9rem;
+	font-variation-settings: "wght" 610;
 }

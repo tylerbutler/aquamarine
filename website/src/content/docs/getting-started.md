@@ -42,8 +42,13 @@ pub fn main() {
   ) {
     Ok(channel) -> {
       // ... use the channel ...
-      let _ = aquamarine.close(channel)
-      Nil
+      case aquamarine.close(channel) {
+        Ok(Nil) -> Nil
+        Error(error) -> {
+          io.debug(error)
+          Nil
+        }
+      }
     }
 
     Error(error) -> {
@@ -84,7 +89,10 @@ case aquamarine.receive(channel) {
     // incoming.event, incoming.topic, incoming.payload, ...
     Nil
   }
-  Error(_) -> Nil
+  Error(error) -> {
+    io.debug(error)
+    Nil
+  }
 }
 ```
 
@@ -97,7 +105,13 @@ Only the process that called `connect` should call `receive` — see
 underlying socket.
 
 ```gleam
-let _ = aquamarine.close(channel)
+case aquamarine.close(channel) {
+  Ok(Nil) -> Nil
+  Error(error) -> {
+    io.debug(error)
+    Nil
+  }
+}
 ```
 
 ## Next steps
