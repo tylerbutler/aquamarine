@@ -8,7 +8,7 @@
 
 packages = [
   { name = "argv", version = "1.1.0", build_tools = ["gleam"], requirements = [], otp_app = "argv", source = "hex", outer_checksum = "3277D100448BDB4A29B6D58C0F36F631CBC349E8BDD09766C6309DF202831140" },
-  { name = "beryl", version = "0.1.0", build_tools = ["gleam"], requirements = ["birch", "envoy", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "lattice_presence", "mist", "roost"], source = "git", repo = "https://github.com/tylerbutler/beryl.git", commit = "4803a2f92abd45133e2a32f2dbfb2530964fa938" },
+  { name = "beryl", version = "0.1.0", build_tools = ["gleam"], requirements = ["birch", "envoy", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "lattice_presence", "mist", "roost"], source = "git", repo = "https://github.com/tylerbutler/beryl.git", commit = "9e80433c6ff2b24c43815196c04ed4c9fd21cd21" },
   { name = "bigben", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time", "interior"], otp_app = "bigben", source = "hex", outer_checksum = "4B0D9F2514C06AE577F284532270A6F89007781620E4B12A843388BA549C17D2" },
   { name = "birch", version = "0.2.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "simplifile"], otp_app = "birch", source = "hex", outer_checksum = "20CCDACA9E2A17E1D7F2C35322E619E7DDF98774FDC598D01AD5F414928E6261" },
   { name = "cowlib", version = "2.16.1", build_tools = ["make", "rebar3"], requirements = [], otp_app = "cowlib", source = "hex", outer_checksum = "58F1E425A9E04176F1D30E20116F57C4E90EF0E187552E9741C465BDF4044F70" },
@@ -45,7 +45,7 @@ packages = [
 ]
 
 [requirements]
-beryl = { git = "https://github.com/tylerbutler/beryl.git", ref = "4803a2f92abd45133e2a32f2dbfb2530964fa938" }
+beryl = { git = "https://github.com/tylerbutler/beryl.git", ref = "9e80433c6ff2b24c43815196c04ed4c9fd21cd21" }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_http = { version = ">= 4.3.0 and < 5.0.0" }
 gleam_json = { version = ">= 3.0.0 and < 4.0.0" }
