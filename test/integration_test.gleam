@@ -19,85 +19,79 @@ import gleam/json
 import gleam/option.{Some}
 import gleam/result
 import mist
-import startest.{describe, it}
-import startest/expect
+import gleeunit/should
 
 const test_port: Int = 47_891
 
 const test_path: String = "/socket/websocket"
 
-pub fn integration_tests() {
+pub fn integration_tests_test() {
   let channels = start_beryl()
   let _server = start_mist(channels)
 
-  describe("aquamarine <-> beryl", [
-    it("joins a channel and receives a server push", fn() {
-      let assert Ok(ch) =
-        channel.connect(
-          host: "127.0.0.1",
-          port: test_port,
-          path: test_path,
-          topic: "test:lobby",
-          payload: json.object([#("hello", json.bool(True))]),
-          codec: phoenix.codec(),
-        )
+  // joins a channel and receives a server push
+  let assert Ok(ch) =
+    channel.connect(
+      host: "127.0.0.1",
+      port: test_port,
+      path: test_path,
+      topic: "test:lobby",
+      payload: json.object([#("hello", json.bool(True))]),
+      codec: phoenix.codec(),
+    )
 
-      // Give the server a moment to register the socket as a subscriber.
-      process.sleep(50)
+  // Give the server a moment to register the socket as a subscriber.
+  process.sleep(50)
 
-      beryl.broadcast(
-        channels,
-        "test:lobby",
-        "tick",
-        json.object([#("n", json.int(42))]),
-      )
+  beryl.broadcast(
+    channels,
+    "test:lobby",
+    "tick",
+    json.object([#("n", json.int(42))]),
+  )
 
-      let assert Ok(incoming) = channel.receive(ch)
-      incoming.event |> expect.to_equal("tick")
-      incoming.topic |> expect.to_equal("test:lobby")
-      decode_n(incoming.payload) |> expect.to_equal(Ok(42))
+  let assert Ok(incoming) = channel.receive(ch)
+  incoming.event |> should.equal("tick")
+  incoming.topic |> should.equal("test:lobby")
+  decode_n(incoming.payload) |> should.equal(Ok(42))
 
-      let assert Ok(Nil) = channel.close(ch)
-      Nil
-    }),
-    it("round-trips a client push through the public facade", fn() {
-      let assert Ok(ch) =
-        aquamarine.connect(
-          host: "127.0.0.1",
-          port: test_port,
-          path: test_path,
-          topic: "test:echo",
-          payload: json.object([]),
-          codec: phoenix.codec(),
-        )
+  let assert Ok(Nil) = channel.close(ch)
 
-      let assert Ok(Nil) =
-        aquamarine.push(
-          ch,
-          "say",
-          json.object([#("body", json.string("hello"))]),
-        )
+  // round-trips a client push through the public facade
+  let assert Ok(ch) =
+    aquamarine.connect(
+      host: "127.0.0.1",
+      port: test_port,
+      path: test_path,
+      topic: "test:echo",
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    )
 
-      let assert Ok(incoming) = aquamarine.receive(ch)
-      incoming.event |> expect.to_equal(phoenix.codec().reply_event)
-      incoming.topic |> expect.to_equal("test:echo")
-      decode_body(incoming.payload) |> expect.to_equal(Ok("hello"))
+  let assert Ok(Nil) =
+    aquamarine.push(
+      ch,
+      "say",
+      json.object([#("body", json.string("hello"))]),
+    )
 
-      let assert Ok(Nil) = aquamarine.close(ch)
-      Nil
-    }),
-    it("surfaces a server-side join rejection", fn() {
-      channel.connect(
-        host: "127.0.0.1",
-        port: test_port,
-        path: test_path,
-        topic: "test:rejected",
-        payload: json.object([]),
-        codec: phoenix.codec(),
-      )
-      |> expect.to_equal(Error(error.JoinRejected("error")))
-    }),
-  ])
+  let assert Ok(incoming) = aquamarine.receive(ch)
+  incoming.event |> should.equal(phoenix.codec().reply_event)
+  incoming.topic |> should.equal("test:echo")
+  decode_body(incoming.payload) |> should.equal(Ok("hello"))
+
+  let assert Ok(Nil) = aquamarine.close(ch)
+
+  // surfaces a server-side join rejection
+  channel.connect(
+    host: "127.0.0.1",
+    port: test_port,
+    path: test_path,
+    topic: "test:rejected",
+    payload: json.object([]),
+    codec: phoenix.codec(),
+  )
+  |> should.equal(Error(error.JoinRejected("error")))
 }
 
 fn start_beryl() -> beryl.Channels {

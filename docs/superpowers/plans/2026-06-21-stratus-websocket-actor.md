@@ -6,7 +6,7 @@
 
 **Architecture:** `aquamarine/channel` becomes the owner of a Stratus WebSocket actor. `connect` starts Stratus, sends the channel join from inside the actor loop, waits for that join to complete, then returns an opaque `Channel(state)` handle for `push` and `close` commands. Inbound messages, runtime errors, heartbeat ticks, and closure are handled inside the actor and delivered through typed callbacks.
 
-**Tech Stack:** Gleam on Erlang, Stratus 3.0.0, `gleam_otp` actors, `gleam_erlang/process` subjects/selectors, Roost Phoenix frame codec, Startest, Beryl/Mist integration server.
+**Tech Stack:** Gleam on Erlang, Stratus 3.0.0, `gleam_otp` actors, `gleam_erlang/process` subjects/selectors, Roost Phoenix frame codec, Gleeunit, Beryl/Mist integration server.
 
 ## Global Constraints
 
@@ -18,13 +18,18 @@
 - Keep the codec boundary: protocol frame shape, event names, join encoding, push encoding, and decode behavior remain in `aquamarine/codec` and `aquamarine/phoenix`.
 - Remove public `receive(channel)` rather than keeping a compatibility wrapper.
 - Existing `push` and `close` call sites should remain command-style operations on an opaque channel handle.
-- Use Startest with `describe`, `it`, and `startest/expect`.
-- Use `gleam test -- test/<file>.gleam` for targeted tests and `just ci` before final handoff.
+- Use Gleeunit 1.11.0 with public `*_test` functions and `gleeunit/should` assertions.
+- Use `gleam test -- --test-name-filter=<name>` for targeted tests when possible and `just ci` before final handoff.
 
 ---
 
 ## File Structure
 
+- Gleeunit migration note: this plan was first drafted with Startest snippets.
+  The resolved dependency constraint is Stratus 3.0.0 plus Gleeunit 1.11.0.
+  When a later task shows `describe`, `it`, or `startest/expect`, implement the
+  same behavior as public Gleeunit `*_test` functions using
+  `gleeunit/should.equal`.
 - Modify `gleam.toml`: replace the Gluegun dependency with Stratus.
 - Delete or stop importing `src/aquamarine/transport.gleam`: the production socket-like seam goes away.
 - Modify `src/aquamarine/error.gleam`: replace Gluegun-shaped transport variants with stable Aquamarine categories.

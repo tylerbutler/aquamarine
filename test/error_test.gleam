@@ -1,22 +1,17 @@
 import aquamarine/error
-import startest.{describe, it}
-import startest/expect
+import gleeunit/should
 
-pub fn error_tests() {
-  describe("public error surface", [
-    it("keeps transport errors in Aquamarine-owned categories", fn() {
-      [
-        error.HandshakeFailed("bad upgrade"),
-        error.SocketConnectionFailed("econnrefused"),
-        error.SocketSendFailed("closed"),
-        error.SocketReceiveFailed("timeout"),
-        error.InvalidTransportConfig("bad request"),
-        error.UnexpectedTransportFailure("actor exited"),
-      ]
-      |> list_all_stable
-      |> expect.to_equal(True)
-    }),
-  ])
+pub fn transport_errors_are_stable_test() {
+  [
+    error.HandshakeFailed("bad upgrade"),
+    error.SocketConnectionFailed("econnrefused"),
+    error.SocketSendFailed("closed"),
+    error.SocketReceiveFailed("timeout"),
+    error.InvalidTransportConfig("bad request"),
+    error.UnexpectedTransportFailure("actor exited"),
+  ]
+  |> list_all_stable
+  |> should.equal(True)
 }
 
 fn list_all_stable(errors: List(error.TransportError)) -> Bool {

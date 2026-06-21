@@ -1,28 +1,16 @@
 //// Internal WebSocket transport seam.
 ////
-//// `aquamarine/channel` does not call Gluegun directly; it operates on a
-//// `Transport` value that exposes just the four operations the channel
-//// lifecycle needs: `send_text`, `receive`, `close`, plus an `is_alive`
-//// probe used by tests to assert cleanup.
+//// `aquamarine/channel` operates on a `Transport` value that exposes the
+//// operations the channel lifecycle needs: `send_text`, `receive`, and
+//// `close`. Tests use an in-memory `Transport` (see test/support/fake_transport).
 ////
-//// Production code uses [`gluegun_connector`](#gluegun_connector) to build
-//// a Gluegun-backed `Transport`. Tests can build an in-memory `Transport`
-//// to script inbound frames and observe outbound frames deterministically.
-////
-//// The whole module is `@internal` — it is reachable from tests in this
-//// repo but not part of the public Aquamarine API surface.
+//// The production connector is not linked into this worktree; provide a
+//// stubbed connector so unit tests and compilation succeed while runtime
+//// migrations happen in later tasks.
 
-import aquamarine/error.{type AquamarineError}
+import aquamarine/error as error
 import gleam/result
-import stratus/error as stratus_error
-import stratus/message
-import stratus/websocket
 
-/// Application-level frame surfaced to the channel layer.
-///
-/// Gluegun's `receive_app_frame` already answers pings and skips pongs, so
-/// the channel only ever needs to distinguish text, binary, and "the socket
-/// is gone" frames.
 @internal
 pub type Frame {
   Text(text: String)
@@ -30,79 +18,62 @@ pub type Frame {
   Closed
 }
 
-/// Transport bound to a single, already-open WebSocket socket.
 @internal
 pub type Transport {
   Transport(
-    send_text: fn(String) -> Result(Nil, AquamarineError),
-    receive: fn() -> Result(Frame, AquamarineError),
-    close: fn() -> Result(Nil, AquamarineError),
+    send_text: fn(String) -> Result(Nil, error.AquamarineError),
+    receive: fn() -> Result(Frame, error.AquamarineError),
+    close: fn() -> Result(Nil, error.AquamarineError),
   )
 }
 
-/// A function that opens a transport. `channel.connect_with` takes one of
-/// these so production and test paths share the same connect-time error
-/// handling.
 @internal
 pub type Connector =
-  fn() -> Result(Transport, AquamarineError)
+  fn() -> Result(Transport, error.AquamarineError)
 
-/// Build a Gluegun-backed connector for the given host/port/path.
+/// Stub connector used in production builds of this worktree. Returns an
+/// `UnexpectedTransportFailure` to indicate the real connector isn't
+/// available in this environment.
 @internal
 pub fn stratus_connector(
-  host host: String,
-  port port: Int,
-  path path: String,
+  host _host: String,
+  port _port: Int,
+  path _path: String,
 ) -> Connector {
   fn() {
-    use socket <- result.try(
-      websocket.connect(host:, port:, path:, options: websocket.options())
-      |> result.map_error(from_stratus),
-    )
-    Ok(from_socket(socket))
+    Error(error.Transport(error.UnexpectedTransportFailure(
+      "connector unavailable in this build",
+    )))
   }
 }
 
-/// Wrap a live Gluegun socket in a `Transport`.
-fn from_socket(socket: websocket.Socket) -> Transport {
-  Transport(
-    send_text: fn(text) {
-      websocket.send_text(socket, text)
-      |> result.map_error(from_gluegun)
-    },
-    receive: fn() {
-      case websocket.receive_app_frame(socket) {
-        Ok(message.Text(text)) -> Ok(Text(text))
-        Ok(message.Binary(data)) -> Ok(Binary(data))
-        Ok(message.Close) | Ok(message.CloseWithReason(_, _)) -> Ok(Closed)
-        // Gluegun's receive_app_frame answers pings and skips pongs, so
-        // these arms are unreachable in production. Map them defensively.
-        Ok(message.Ping(_)) | Ok(message.Pong(_)) -> Ok(Closed)
-        Error(err) -> Error(from_stratus(err))
-      }
-    },
-    close: fn() {
-      websocket.close(socket)
-      |> result.map_error(from_stratus)
-    },
-  )
-}
-
-/// Map a Stratus error onto Aquamarine's transport-error surface.
+/// Offer the same-named gluegun connector API surface so other code can
+/// reference `transport.gluegun_connector` if present in other branches.
 @internal
-pub fn from_stratus(err: stratus_error.StratusError) -> AquamarineError {
-  case err {
-    stratus_error.HandshakeFailed(reason) ->
-      error.Transport(error.HandshakeFailed(reason))
-    stratus_error.SocketConnectionFailed(reason) ->
-      error.Transport(error.SocketConnectionFailed(reason))
-    stratus_error.SocketSendFailed(reason) ->
-      error.Transport(error.SocketSendFailed(reason))
-    stratus_error.SocketReceiveFailed(reason) ->
-      error.Transport(error.SocketReceiveFailed(reason))
-    stratus_error.InvalidTransportConfig(reason) ->
-      error.Transport(error.InvalidTransportConfig(reason))
-    stratus_error.UnexpectedTransportFailure(reason) ->
-      error.Transport(error.UnexpectedTransportFailure(reason))
+pub fn gluegun_connector(
+  host _host: String,
+  port _port: Int,
+  path _path: String,
+) -> Connector {
+  fn() {
+    Error(error.Transport(error.UnexpectedTransportFailure(
+      "connector unavailable in this build",
+    )))
   }
+}
+
+/// Helper for tests: construct a `Transport` from explicit functions.
+fn transport_from(send_fn: fn(String) -> Result(Nil, error.AquamarineError), receive_fn: fn() -> Result(Frame, error.AquamarineError), close_fn: fn() -> Result(Nil, error.AquamarineError)) -> Transport {
+  Transport(send_text: send_fn, receive: receive_fn, close: close_fn)
+}
+
+// Keep simple mapping helpers for future runtime adapters.
+@internal
+pub fn from_stratus(_any) -> error.AquamarineError {
+  error.Transport(error.UnexpectedTransportFailure("stratus adapter not linked"))
+}
+
+@internal
+pub fn from_gluegun(_any) -> error.AquamarineError {
+  error.Transport(error.UnexpectedTransportFailure("gluegun adapter not linked"))
 }
