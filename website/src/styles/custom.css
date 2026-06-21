@@ -65,7 +65,7 @@ h3,
 	text-wrap: balance;
 }
 
-/* Space Grotesk runs wide; ease tracking back toward neutral at small sizes. */
+/* Sora reads tight at heading weights; ease tracking back toward neutral at small sizes. */
 h4,
 h5,
 h6 {

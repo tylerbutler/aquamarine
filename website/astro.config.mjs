@@ -28,7 +28,7 @@ export default defineConfig({
 			favicon: "favicon.png",
 			customCss: [
 				"@fontsource-variable/commissioner/wght.css",
-				"@fontsource-variable/space-grotesk/wght.css",
+				"@fontsource-variable/sora/wght.css",
 				"@fontsource-variable/jetbrains-mono/wght.css",
 				"./src/styles/fonts.css",
 				"./src/styles/custom.css",
