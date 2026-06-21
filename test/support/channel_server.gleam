@@ -90,7 +90,3 @@ pub fn broadcast(
 pub fn stop(_server: Server) -> Nil {
   Nil
 }
-
-pub fn send_raw(_server: Server, _topic: String, _raw: String) -> Nil {
-  Nil
-}

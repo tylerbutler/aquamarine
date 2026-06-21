@@ -555,9 +555,7 @@ fn dispatch_incoming(
       if event == state.config.codec.reply_event
       && incoming.topic == state.config.codec.heartbeat_topic
     -> stratus.continue(state)
-    event
-      if event == state.config.codec.close_event
-    -> {
+    event if event == state.config.codec.close_event -> {
       let next = state.handlers.on_closed(state.user_state)
       apply_next(RuntimeState(..state, join_state: Closing), next)
     }
@@ -595,6 +593,7 @@ fn handle_transport_closed(
     Closing -> Nil
     _ -> {
       let _ = state.handlers.on_closed(state.user_state)
+      Nil
     }
   }
   ref.stop(state.counter)
