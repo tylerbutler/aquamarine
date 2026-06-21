@@ -211,25 +211,28 @@ pub fn connect(
     |> stratus.on_message(loop)
     |> stratus.on_close(handle_transport_closed)
 
-  use started <- result.try(
-    stratus.start(builder)
-    |> result.map_error(map_start_error),
-  )
+  case stratus.start(builder) {
+    Ok(started) -> {
+      let reply_to = process.new_subject()
+      StartJoin(reply_to)
+      |> stratus.to_user_message
+      |> process.send(started.data, _)
 
-  let reply_to = process.new_subject()
-  StartJoin(reply_to)
-  |> stratus.to_user_message
-  |> process.send(started.data, _)
-
-  case process.receive(reply_to, join_timeout_ms) {
-    Ok(Ok(Nil)) -> Ok(CallbackChannel(subject: started.data))
-    Ok(Error(err)) -> {
-      let _ = request_close(started.data)
-      Error(err)
+      case process.receive(reply_to, join_timeout_ms) {
+        Ok(Ok(Nil)) -> Ok(CallbackChannel(subject: started.data))
+        Ok(Error(err)) -> {
+          let _ = request_close(started.data)
+          Error(err)
+        }
+        Error(_) -> {
+          let _ = request_close(started.data)
+          Error(error.ReplyTimeout)
+        }
+      }
     }
-    Error(_) -> {
-      let _ = request_close(started.data)
-      Error(error.ReplyTimeout)
+    Error(err) -> {
+      ref.stop(counter)
+      Error(map_start_error(err))
     }
   }
 }
