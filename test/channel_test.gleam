@@ -74,20 +74,6 @@ fn ok_join_reply(join_ref: String) -> String {
   )
 }
 
-type CallbackReply {
-  CallbackReply(String, String)
-}
-
-fn decode_callback_reply(payload) -> Result(CallbackReply, Nil) {
-  let decoder = {
-    use status <- decode.field("status", decode.string)
-    use body <- decode.subfield(["response", "body"], decode.string)
-    decode.success(CallbackReply(status, body))
-  }
-  decode.run(payload, decoder)
-  |> result.map_error(fn(_) { Nil })
-}
-
 /// Build an `error` join reply for the given join_ref.
 fn error_join_reply(join_ref: String) -> String {
   roost_frame.encode_reply(
@@ -477,9 +463,7 @@ pub fn channel_tests_test() {
     Ok(Message(incoming)) -> {
       incoming.event |> should.equal(phoenix.codec().reply_event)
       incoming.topic |> should.equal(test_topic)
-      decode_callback_reply(incoming.payload) |> should.equal(
-        Ok(CallbackReply("ok", "hi")),
-      )
+      incoming.ref |> should.equal(Some("2"))
     }
     _ -> panic as "expected callback reply message"
   }
