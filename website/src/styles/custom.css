@@ -22,6 +22,9 @@
 	/* Aquamarine-specific: crimson highlight, used sparingly. */
 	--aqua-color-crimson: #e63462;
 	--aqua-color-crimson-soft: #ff6b8b;
+	/* Crimson is the wayfinding accent for the typed-error surface. */
+	--aqua-error-line: var(--aqua-color-crimson);
+	--aqua-error-link: var(--aqua-color-crimson-soft);
 	--aqua-space-tight: clamp(0.75rem, 0.68rem + 0.35vw, 1rem);
 	--aqua-space-section: clamp(2.75rem, 2.05rem + 3.48vw, 5.25rem);
 }
@@ -44,6 +47,8 @@
 
 	--aqua-color-crimson: #c01e4a;
 	--aqua-color-crimson-soft: #e63462;
+	--aqua-error-line: var(--aqua-color-crimson);
+	--aqua-error-link: var(--aqua-color-crimson);
 }
 
 body {
@@ -81,10 +86,6 @@ h3,
 	line-height: 1.75;
 }
 
-.aqua-copy > p {
-	margin: 0;
-}
-
 .aqua-intro strong {
 	color: var(--sl-color-accent-high);
 	font-variation-settings: "wght" 720;
@@ -108,7 +109,6 @@ h3,
 }
 
 .aqua-lifecycle {
-	position: relative;
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
 	gap: 0.75rem;
@@ -116,9 +116,7 @@ h3,
 	margin: 0;
 	padding: clamp(0.75rem, 0.54rem + 1.06vw, 1.5rem);
 	border: 1px solid var(--sl-color-gray-5);
-	background:
-		linear-gradient(90deg, transparent 0 49%, var(--sl-color-accent-low) 49% 51%, transparent 51% 100%),
-		var(--sl-color-gray-6);
+	background: var(--sl-color-gray-6);
 }
 
 .aqua-lifecycle__step {
@@ -163,6 +161,14 @@ h3,
 	border-block-start-color: var(--sl-color-accent);
 }
 
+.aqua-path[data-variant="error"] {
+	border-block-start-color: var(--aqua-error-line);
+}
+
+.aqua-path[data-variant="error"] a {
+	color: var(--aqua-error-link);
+}
+
 .aqua-path strong {
 	color: var(--sl-color-white);
 	font-size: 1.05rem;
@@ -179,47 +185,117 @@ h3,
 	font-variation-settings: "wght" 650;
 }
 
+.aqua-path-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem 1.5rem;
+	margin: 0;
+	font-size: 0.875rem;
+	color: var(--sl-color-gray-2);
+}
+
+.aqua-legend-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.aqua-legend-swatch {
+	flex: none;
+	width: 1.5rem;
+	height: 2px;
+	background: var(--sl-color-gray-5);
+}
+
+.aqua-legend-item[data-variant="recommended"] .aqua-legend-swatch {
+	background: var(--sl-color-accent);
+}
+
+.aqua-legend-item[data-variant="error"] .aqua-legend-swatch {
+	background: var(--aqua-error-line);
+}
+
+.aqua-arrow {
+	display: inline-block;
+	transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.aqua-path a:hover .aqua-arrow,
+.aqua-path a:focus-visible .aqua-arrow {
+	transform: translateX(0.2em);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.aqua-arrow {
+		transition: none;
+	}
+}
+
 .aqua-ecosystem-map {
 	display: grid;
-	gap: 1rem;
+	gap: 1.25rem;
 	padding: clamp(1rem, 0.72rem + 1.4vw, 2rem);
+	margin-block: 0;
 	border: 1px solid var(--sl-color-gray-5);
 	background: var(--sl-color-gray-6);
 }
 
-.aqua-ecosystem-map__row {
-	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-	gap: 0.75rem;
-	align-items: stretch;
+.aqua-diagram {
+	display: block;
+	width: 100%;
+	max-width: 38rem;
+	height: auto;
+	margin-inline: auto;
 }
 
-.aqua-ecosystem-node {
-	display: grid;
-	gap: 0.35rem;
-	padding: 0.9rem;
-	border: 1px solid var(--sl-color-gray-5);
-	background: var(--sl-color-black);
+.aqua-dia-node {
+	fill: var(--sl-color-black);
+	stroke: var(--sl-color-gray-5);
+	stroke-width: 1.5;
 }
 
-.aqua-ecosystem-node[data-primary="true"] {
-	border-color: var(--sl-color-accent);
-	background: var(--sl-color-accent-low);
+.aqua-dia-node--primary {
+	fill: var(--sl-color-accent-low);
+	stroke: var(--sl-color-accent);
+	stroke-width: 2;
 }
 
-.aqua-ecosystem-node strong {
-	color: var(--sl-color-white);
-	font-variation-settings: "wght" 730;
+.aqua-dia-name {
+	fill: var(--sl-color-white);
+	font-size: 17px;
+	font-weight: 700;
 }
 
-.aqua-ecosystem-node span,
-.aqua-ecosystem-link {
+.aqua-dia-name--sm {
+	font-size: 15px;
+}
+
+.aqua-dia-sub {
+	fill: var(--sl-color-gray-2);
+	font-size: 12.5px;
+}
+
+.aqua-dia-line {
+	fill: none;
+	stroke: var(--sl-color-gray-3);
+	stroke-width: 1.5;
+}
+
+.aqua-dia-arrowhead {
+	fill: var(--sl-color-gray-3);
+}
+
+.aqua-dia-label {
+	fill: var(--sl-color-gray-2);
+	font-size: 12.5px;
+}
+
+.aqua-ecosystem-caption {
+	max-width: 60ch;
+	margin-inline: auto;
 	color: var(--sl-color-gray-2);
-	line-height: 1.5;
-}
-
-.aqua-ecosystem-link {
-	text-align: center;
 	font-size: 0.9rem;
-	font-variation-settings: "wght" 610;
+	line-height: 1.55;
+	text-align: center;
+	text-wrap: pretty;
 }

@@ -26,24 +26,24 @@ signatures.
 
 <div className="aqua-home">
   <section className="aqua-intro">
-    <div className="aqua-copy">
+    <p className="aqua-copy">
       Aquamarine is the <strong>client runtime</strong> for Beryl-style
       WebSocket channels in Gleam. It owns the process lifecycle and keeps
       the wire protocol behind a pluggable <a href="/guides/codecs/">Codec</a>.
-    </div>
-    <div className="aqua-copy">
+    </p>
+    <p className="aqua-copy">
       Use the bundled <a href="/guides/phoenix/">aquamarine/phoenix</a> codec
       for Phoenix Channels and <a href="https://github.com/tylerbutler/beryl">Beryl</a>,
       or provide your own codec without changing the channel runtime.
-    </div>
+    </p>
   </section>
 
   <section className="aqua-section">
     <h2>One channel, five moving parts</h2>
-    <div className="aqua-copy">
+    <p className="aqua-copy">
       The public API stays small because Aquamarine handles the recurring
       channel work after the socket opens.
-    </div>
+    </p>
     <ol className="aqua-lifecycle" aria-label="Aquamarine channel lifecycle">
       <li className="aqua-lifecycle__step">
         <code>connect</code>
@@ -75,11 +75,11 @@ signatures.
 
   <section className="aqua-section">
     <h2>Four functions, one typed error surface</h2>
-    <div className="aqua-copy">
+    <p className="aqua-copy">
       Connect to a Phoenix-compatible endpoint and handle failures through the
       same <code>AquamarineError</code> variants returned by every public
       operation.
-    </div>
+    </p>
   </section>
 </div>
 
@@ -117,23 +117,33 @@ See [Error handling](/guides/error-handling/) for the
       <div className="aqua-path">
         <strong>First connection</strong>
         <span>Install Aquamarine, open a channel, push, receive, and close.</span>
-        <a href="/getting-started/">Start here -></a>
+        <a href="/getting-started/">Start here <span className="aqua-arrow" aria-hidden="true">→</span></a>
       </div>
       <div className="aqua-path">
         <strong>Runtime model</strong>
         <span>Understand ownership, filtering, refs, and cleanup.</span>
-        <a href="/guides/channels/">Read the lifecycle -></a>
+        <a href="/guides/channels/">Read the lifecycle <span className="aqua-arrow" aria-hidden="true">→</span></a>
       </div>
       <div className="aqua-path">
         <strong>Phoenix and Beryl</strong>
         <span>Use the bundled codec with Phoenix Channels-compatible servers.</span>
-        <a href="/guides/phoenix/">Wire the codec -></a>
+        <a href="/guides/phoenix/">Wire the codec <span className="aqua-arrow" aria-hidden="true">→</span></a>
       </div>
-      <div className="aqua-path">
+      <div className="aqua-path" data-variant="error">
         <strong>Errors and API</strong>
         <span>Handle each failure variant and browse the four-function surface.</span>
-        <a href="/guides/error-handling/">Handle failures -></a>
+        <a href="/guides/error-handling/">Handle failures <span className="aqua-arrow" aria-hidden="true">→</span></a>
       </div>
     </div>
+    <p className="aqua-path-legend">
+      <span className="aqua-legend-item" data-variant="recommended">
+        <span className="aqua-legend-swatch" aria-hidden="true"></span>
+        Recommended start
+      </span>
+      <span className="aqua-legend-item" data-variant="error">
+        <span className="aqua-legend-swatch" aria-hidden="true"></span>
+        Error handling
+      </span>
+    </p>
   </section>
 </div>
