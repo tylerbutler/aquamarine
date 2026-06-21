@@ -37,7 +37,7 @@ const callback_push_test_port: Int = 47_904
 
 type TestEvent {
   Joined(String)
-  Message(String)
+  Message(Incoming)
   ErrorSeen(error.AquamarineError)
   Closed
 }
@@ -72,6 +72,20 @@ fn ok_join_reply(join_ref: String) -> String {
     status: roost_frame.StatusOk,
     response: empty_payload(),
   )
+}
+
+type CallbackReply {
+  CallbackReply(String, String)
+}
+
+fn decode_callback_reply(payload) -> Result(CallbackReply, Nil) {
+  let decoder = {
+    use status <- decode.field("status", decode.string)
+    use body <- decode.subfield(["response", "body"], decode.string)
+    decode.success(CallbackReply(status, body))
+  }
+  decode.run(payload, decoder)
+  |> result.map_error(fn(_) { Nil })
 }
 
 /// Build an `error` join reply for the given join_ref.
@@ -458,8 +472,17 @@ pub fn channel_tests_test() {
   process.receive(seen, 1000)
   |> should.equal(Ok("say"))
 
-  process.receive(events, 1000)
-  |> should.equal(Ok(Message(phoenix.codec().reply_event)))
+  let received = process.receive(events, 1000)
+  case received {
+    Ok(Message(incoming)) -> {
+      incoming.event |> should.equal(phoenix.codec().reply_event)
+      incoming.topic |> should.equal(test_topic)
+      decode_callback_reply(incoming.payload) |> should.equal(
+        Ok(CallbackReply("ok", "hi")),
+      )
+    }
+    _ -> panic as "expected callback reply message"
+  }
 
   let assert Ok(Nil) = channel.close(ch)
   let _ = channel_server.stop(server)
@@ -869,7 +892,7 @@ fn callback_handlers() -> channel.Handlers(CallbackState) {
       channel.continue(state)
     },
     on_message: fn(state: CallbackState, incoming: Incoming) {
-      process.send(state.events, Message(incoming.event))
+      process.send(state.events, Message(incoming))
       channel.continue(state)
     },
     on_error: fn(state: CallbackState, err) {
@@ -895,7 +918,7 @@ fn stopping_handlers() -> channel.Handlers(CallbackState) {
       channel.stop()
     },
     on_message: fn(state: CallbackState, incoming: Incoming) {
-      process.send(state.events, Message(incoming.event))
+      process.send(state.events, Message(incoming))
       channel.continue(state)
     },
     on_error: fn(state: CallbackState, err) {
