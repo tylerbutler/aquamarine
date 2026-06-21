@@ -5,7 +5,7 @@ description: How Aquamarine stays protocol-agnostic, and how to plug in a codec 
 
 Aquamarine's channel runtime does not know what a Phoenix frame looks
 like. It delegates every encode/decode decision — and the names of the
-protocol's special events — to a [`Codec`](https://hexdocs.pm/aquamarine/aquamarine/codec.html)
+protocol's special events — to a [`Codec`](https://github.com/tylerbutler/aquamarine/blob/main/src/aquamarine/codec.gleam)
 value supplied at `connect` time.
 
 This is what makes the same client work against Phoenix Channels, Beryl,

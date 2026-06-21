@@ -1,16 +1,17 @@
 ---
 title: API overview
-description: The four public functions Aquamarine exposes, with pointers to the generated HexDocs.
+description: The four public functions Aquamarine exposes, with pointers to the source.
 ---
 
 Aquamarine's public surface is deliberately tiny. The top-level
-[`aquamarine`](https://hexdocs.pm/aquamarine/aquamarine.html) module
+[`aquamarine`](https://github.com/tylerbutler/aquamarine/blob/main/src/aquamarine.gleam) module
 re-exports four functions from `aquamarine/channel`; everything else is
 internal.
 
-For the full type signatures, browse the generated documentation on
-[HexDocs](https://hexdocs.pm/aquamarine/). The summaries below are meant
-to be a quick map.
+For the full type signatures, read the
+[source on GitHub](https://github.com/tylerbutler/aquamarine/tree/main/src).
+Aquamarine isn't published to Hex yet (pre-1.0). The summaries below are
+meant to be a quick map.
 
 ## `connect`
 
