@@ -7,6 +7,7 @@
 //// frame classes that `receive` must skip or terminate on.
 
 import aquamarine/channel
+import aquamarine/codec.{type Incoming}
 import aquamarine/error
 import aquamarine/phoenix
 import gleam/dynamic/decode
@@ -16,12 +17,28 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleeunit/should
 import roost/frame as roost_frame
+import support/channel_server
 import support/fake_transport as fake
 
 // 24 hours — long enough that no test in this file ever sees a heartbeat tick.
 const no_heartbeat: Int = 86_400_000
 
 const test_topic: String = "test:lobby"
+
+const join_test_port: Int = 47_893
+
+const rejected_test_port: Int = 47_894
+
+type TestEvent {
+  Joined(String)
+  Message(String)
+  ErrorSeen(error.AquamarineError)
+  Closed
+}
+
+type CallbackState {
+  CallbackState(events: process.Subject(TestEvent))
+}
 
 // -- Helpers ----------------------------------------------------------------
 
@@ -79,6 +96,57 @@ fn connect_with_fake(fake_socket: fake.FakeSocket) {
 }
 
 // -- Tests ------------------------------------------------------------------
+
+pub fn connect_waits_for_join_and_calls_on_joined_test() {
+  let events = process.new_subject()
+  let server = channel_server.start(join_test_port)
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: join_test_port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      callback_handlers(),
+      CallbackState(events),
+    )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Joined("ok")))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+pub fn connect_surfaces_join_rejection_test() {
+  let server = channel_server.start(rejected_test_port)
+  channel_server.register_rejected(server, test_topic)
+
+  channel.connect(
+    channel.config(
+      host: "127.0.0.1",
+      port: rejected_test_port,
+      path: "/socket/websocket",
+      topic: test_topic,
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    ),
+    callback_handlers(),
+    CallbackState(process.new_subject()),
+  )
+  |> should.equal(Error(error.JoinRejected("error")))
+
+  channel_server.stop(server)
+}
 
 pub fn channel_tests_test() {
   // channel.connect_with: returns Ok on a matching ok join reply
@@ -461,4 +529,30 @@ fn decode_n(payload) -> Result(Int, Nil) {
   }
   decode.run(payload, decoder)
   |> result.map_error(fn(_) { Nil })
+}
+
+fn callback_handlers() -> channel.Handlers(CallbackState) {
+  channel.handlers(
+    on_joined: fn(state: CallbackState, payload) {
+      let decoder = {
+        use welcome <- decode.field("welcome", decode.string)
+        decode.success(welcome)
+      }
+      let assert Ok(value) = decode.run(payload, decoder)
+      process.send(state.events, Joined(value))
+      channel.continue(state)
+    },
+    on_message: fn(state: CallbackState, incoming: Incoming) {
+      process.send(state.events, Message(incoming.event))
+      channel.continue(state)
+    },
+    on_error: fn(state: CallbackState, err) {
+      process.send(state.events, ErrorSeen(err))
+      channel.continue(state)
+    },
+    on_closed: fn(state: CallbackState) {
+      process.send(state.events, Closed)
+      channel.continue(state)
+    },
+  )
 }

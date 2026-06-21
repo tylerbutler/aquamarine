@@ -1,15 +1,7 @@
 //// Channel client lifecycle.
 ////
-//// A `Channel` wraps a WebSocket transport joined to a single topic, plus the
-//// codec, ref counter, and background heartbeat needed to keep the channel
-//// healthy.
-////
-//// ## Process ownership
-////
-//// The transport is owned by the process that called [`connect`](#connect).
-//// Only that process may call [`receive`](#receive). [`push`](#push) and
-//// [`close`](#close) are safe to call from any process, since the underlying
-//// `send_text` is fire-and-forget.
+//// A `Channel` wraps either the callback runtime used by `connect` or the
+//// legacy in-memory transport path still used by tests.
 
 import aquamarine/codec.{type Codec, type Incoming}
 import aquamarine/error
@@ -18,9 +10,15 @@ import aquamarine/ref
 import aquamarine/transport.{type Connector, type Transport}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
+import gleam/erlang/process
+import gleam/http/request
+import gleam/int
 import gleam/json
 import gleam/option.{Some}
+import gleam/otp/actor
 import gleam/result
+import gleam/string
+import stratus
 
 pub type Config {
   Config(
@@ -31,6 +29,60 @@ pub type Config {
     payload: json.Json,
     codec: Codec,
   )
+}
+
+fn handle_push(
+  state: RuntimeState(state),
+  conn: stratus.Connection,
+  event: String,
+  payload: json.Json,
+  reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+) -> stratus.Next(RuntimeState(state), Command(state)) {
+  case state.join_state {
+    Joined(join_ref) ->
+      case ref.next(state.counter) {
+        Ok(push_ref) -> {
+          let frame =
+            state.config.codec.encode_push(
+              join_ref,
+              push_ref,
+              state.config.topic,
+              event,
+              payload,
+            )
+          case stratus.send_text_message(conn, frame) {
+            Ok(Nil) -> {
+              process.send(reply_to, Ok(Nil))
+              stratus.continue(state)
+            }
+            Error(reason) -> {
+              process.send(
+                reply_to,
+                Error(
+                  error.Transport(
+                    error.SocketSendFailed(string.inspect(reason)),
+                  ),
+                ),
+              )
+              ref.stop(state.counter)
+              stratus.stop()
+            }
+          }
+        }
+        Error(_) -> {
+          process.send(
+            reply_to,
+            Error(error.InternalError("failed to obtain push ref from counter")),
+          )
+          ref.stop(state.counter)
+          stratus.stop()
+        }
+      }
+    _ -> {
+      process.send(reply_to, Error(error.ChannelClosed))
+      stratus.continue(state)
+    }
+  }
 }
 
 pub type Handlers(state) {
@@ -47,9 +99,15 @@ pub type Next(state) {
   Stop
 }
 
-/// Default heartbeat interval, matching the Phoenix JS client.
+const default_heartbeat_ms: Int = 30_000
+
+const join_timeout_ms: Int = 5000
+
 pub opaque type Channel(state) {
-  Channel(
+  CallbackChannel(
+    subject: process.Subject(stratus.InternalMessage(Command(state))),
+  )
+  LegacyChannel(
     transport: Transport,
     topic: String,
     join_ref: String,
@@ -57,6 +115,39 @@ pub opaque type Channel(state) {
     heartbeat: heartbeat.Heartbeat,
     codec: Codec,
   )
+}
+
+type JoinState {
+  NotJoined
+  Joining(
+    reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+    join_ref: String,
+  )
+  Joined(join_ref: String)
+  Closing
+}
+
+type RuntimeState(state) {
+  RuntimeState(
+    config: Config,
+    handlers: Handlers(state),
+    user_state: state,
+    counter: ref.Counter,
+    heartbeat_subject: process.Subject(Command(state)),
+    join_state: JoinState,
+    heartbeat_ms: Int,
+  )
+}
+
+type Command(state) {
+  StartJoin(reply_to: process.Subject(Result(Nil, error.AquamarineError)))
+  Push(
+    event: String,
+    payload: json.Json,
+    reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+  )
+  Heartbeat
+  Close(reply_to: process.Subject(Result(Nil, error.AquamarineError)))
 }
 
 pub fn continue(state: state) -> Next(state) {
@@ -88,17 +179,63 @@ pub fn handlers(
 }
 
 pub fn connect(
-  _config: Config,
-  _handlers: Handlers(state),
-  _initial_state: state,
+  config: Config,
+  handlers: Handlers(state),
+  initial_state: state,
 ) -> Result(Channel(state), error.AquamarineError) {
-  Error(error.InternalError("callback runtime not implemented"))
+  use req <- result.try(request(config))
+  use counter <- result.try(start_counter())
+
+  let heartbeat_subject = process.new_subject()
+  let runtime =
+    RuntimeState(
+      config: config,
+      handlers: handlers,
+      user_state: initial_state,
+      counter: counter,
+      heartbeat_subject: heartbeat_subject,
+      join_state: NotJoined,
+      heartbeat_ms: default_heartbeat_ms,
+    )
+
+  let selector =
+    process.new_selector()
+    |> process.select(heartbeat_subject)
+
+  let builder =
+    stratus.new_with_initialiser(request: req, init: fn() {
+      stratus.initialised(runtime)
+      |> stratus.selecting(selector)
+      |> Ok
+    })
+    |> stratus.on_message(loop)
+    |> stratus.on_close(handle_transport_closed)
+
+  use started <- result.try(
+    stratus.start(builder)
+    |> result.map_error(map_start_error),
+  )
+
+  let reply_to = process.new_subject()
+  StartJoin(reply_to)
+  |> stratus.to_user_message
+  |> process.send(started.data, _)
+
+  case process.receive(reply_to, join_timeout_ms) {
+    Ok(Ok(Nil)) -> Ok(CallbackChannel(subject: started.data))
+    Ok(Error(err)) -> {
+      let _ = request_close(started.data)
+      Error(err)
+    }
+    Error(_) -> {
+      let _ = request_close(started.data)
+      Error(error.ReplyTimeout)
+    }
+  }
 }
 
 /// Like [`connect`](#connect) but takes a `Connector` and an explicit
-/// heartbeat interval. Used by tests to plug in an in-memory transport and a
-/// short heartbeat, and by the public `connect` to wire up a Gluegun-backed
-/// transport with the production interval.
+/// heartbeat interval. Used only by tests to plug in the in-memory transport.
 @internal
 pub fn connect_with(
   connector: Connector,
@@ -109,7 +246,7 @@ pub fn connect_with(
 ) -> Result(Channel(state), error.AquamarineError) {
   use tx <- result.try(connector())
 
-  use counter <- result.try(start_counter(tx))
+  use counter <- result.try(start_legacy_counter(tx))
 
   use join_ref <- result.try(next_join_ref(tx, counter))
   let join_frame = codec.encode_join(join_ref, topic, payload)
@@ -136,7 +273,7 @@ pub fn connect_with(
     heartbeat_ms,
   ))
 
-  Ok(Channel(
+  Ok(LegacyChannel(
     transport: tx,
     topic: topic,
     join_ref: join_ref,
@@ -147,48 +284,326 @@ pub fn connect_with(
 }
 
 /// Push an event into the channel. Refs are assigned automatically.
-///
-/// Returns `Ok(Nil)` once the frame is handed to the transport. This does
-/// **not** wait for a reply.
 pub fn push(
   channel: Channel(state),
   event: String,
   payload: json.Json,
 ) -> Result(Nil, error.AquamarineError) {
-  use ref <- result.try(
-    ref.next(channel.counter)
-    |> result.map_error(fn(_) { error.ChannelClosed }),
-  )
-  let text =
-    channel.codec.encode_push(
-      channel.join_ref,
-      ref,
-      channel.topic,
-      event,
-      payload,
-    )
-  channel.transport.send_text(text)
+  case channel {
+    CallbackChannel(subject) -> push_callback_channel(subject, event, payload)
+    LegacyChannel(..) -> push_legacy(channel, event, payload)
+  }
 }
 
-/// Receive the next inbound frame on the channel.
-///
-/// Skips heartbeat replies so the caller only sees real channel activity.
-/// Returns `Error(ChannelClosed)` if the server sent a close/error event, or
-/// the socket itself closed.
+/// Receive the next inbound frame on the legacy test channel.
+@internal
 pub fn receive(
   channel: Channel(state),
 ) -> Result(Incoming, error.AquamarineError) {
-  do_receive(channel)
+  case channel {
+    CallbackChannel(_) ->
+      Error(error.InternalError("callback receive not implemented"))
+    LegacyChannel(..) -> do_receive(channel)
+  }
+}
+
+/// Close the channel and underlying transport. Callback channels ask the
+/// Stratus actor to close itself; legacy channels stop their helper actors and
+/// close the transport directly.
+pub fn close(channel: Channel(state)) -> Result(Nil, error.AquamarineError) {
+  case channel {
+    CallbackChannel(subject) -> close_callback_channel(subject)
+    LegacyChannel(..) -> close_legacy(channel)
+  }
+}
+
+fn request(
+  config: Config,
+) -> Result(request.Request(String), error.AquamarineError) {
+  let url =
+    "http://" <> config.host <> ":" <> int.to_string(config.port) <> config.path
+
+  request.to(url)
+  |> result.map_error(fn(_) {
+    error.Transport(error.InvalidTransportConfig(url))
+  })
+}
+
+fn start_counter() -> Result(ref.Counter, error.AquamarineError) {
+  ref.start()
+  |> result.map_error(fn(_) {
+    error.InternalError("failed to start ref counter actor")
+  })
+}
+
+fn map_start_error(start_error: actor.StartError) -> error.AquamarineError {
+  case start_error {
+    actor.InitFailed(reason) ->
+      case string.contains(reason, "handshake failed with status") {
+        True -> error.Transport(error.HandshakeFailed(reason))
+        False -> error.Transport(error.SocketConnectionFailed(reason))
+      }
+    actor.InitTimeout ->
+      error.Transport(error.SocketConnectionFailed("connection timed out"))
+    actor.InitExited(reason) ->
+      error.Transport(error.SocketConnectionFailed(string.inspect(reason)))
+  }
+}
+
+fn request_close(
+  subject: process.Subject(stratus.InternalMessage(Command(state))),
+) -> Nil {
+  Close(process.new_subject())
+  |> stratus.to_user_message
+  |> process.send(subject, _)
+}
+
+fn close_callback_channel(
+  subject: process.Subject(stratus.InternalMessage(Command(state))),
+) -> Result(Nil, error.AquamarineError) {
+  let reply_to = process.new_subject()
+  Close(reply_to)
+  |> stratus.to_user_message
+  |> process.send(subject, _)
+
+  case process.receive(reply_to, join_timeout_ms) {
+    Ok(result) -> result
+    Error(_) -> Error(error.ReplyTimeout)
+  }
+}
+
+fn push_callback_channel(
+  subject: process.Subject(stratus.InternalMessage(Command(state))),
+  event: String,
+  payload: json.Json,
+) -> Result(Nil, error.AquamarineError) {
+  let reply_to = process.new_subject()
+  Push(event:, payload:, reply_to:)
+  |> stratus.to_user_message
+  |> process.send(subject, _)
+
+  case process.receive(reply_to, join_timeout_ms) {
+    Ok(result) -> result
+    Error(_) -> Error(error.ReplyTimeout)
+  }
+}
+
+fn loop(
+  state: RuntimeState(state),
+  msg: stratus.Message(Command(state)),
+  conn: stratus.Connection,
+) -> stratus.Next(RuntimeState(state), Command(state)) {
+  case msg {
+    stratus.User(StartJoin(reply_to)) -> start_join(state, conn, reply_to)
+    stratus.Text(text) -> handle_text(state, conn, text)
+    stratus.Binary(_) -> stratus.continue(state)
+    stratus.User(Push(event:, payload:, reply_to:)) ->
+      handle_push(state, conn, event, payload, reply_to)
+    stratus.User(Heartbeat) -> stratus.continue(state)
+    stratus.User(Close(reply_to)) -> {
+      ref.stop(state.counter)
+      let result =
+        stratus.close(conn, because: stratus.Normal(<<>>))
+        |> result.map_error(fn(reason) {
+          error.Transport(error.SocketSendFailed(string.inspect(reason)))
+        })
+      process.send(reply_to, result)
+      stratus.stop()
+    }
+  }
+}
+
+fn start_join(
+  state: RuntimeState(state),
+  conn: stratus.Connection,
+  reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+) -> stratus.Next(RuntimeState(state), Command(state)) {
+  case ref.next(state.counter) {
+    Ok(join_ref) -> {
+      let frame =
+        state.config.codec.encode_join(
+          join_ref,
+          state.config.topic,
+          state.config.payload,
+        )
+      case stratus.send_text_message(conn, frame) {
+        Ok(Nil) ->
+          stratus.continue(
+            RuntimeState(..state, join_state: Joining(reply_to, join_ref)),
+          )
+        Error(reason) -> {
+          let err =
+            error.Transport(error.SocketSendFailed(string.inspect(reason)))
+          process.send(reply_to, Error(err))
+          ref.stop(state.counter)
+          stratus.stop()
+        }
+      }
+    }
+    Error(_) -> {
+      let err = error.InternalError("failed to obtain join ref from counter")
+      process.send(reply_to, Error(err))
+      ref.stop(state.counter)
+      stratus.stop()
+    }
+  }
+}
+
+fn handle_text(
+  state: RuntimeState(state),
+  _conn: stratus.Connection,
+  text: String,
+) -> stratus.Next(RuntimeState(state), Command(state)) {
+  case state.config.codec.decode(text) {
+    Ok(incoming) ->
+      case state.join_state {
+        Joining(reply_to, join_ref) ->
+          handle_join_reply(state, reply_to, join_ref, incoming)
+        Joined(_) -> handle_joined_incoming(state, incoming)
+        NotJoined | Closing -> stratus.continue(state)
+      }
+    Error(decode_error) ->
+      case state.join_state {
+        Joining(reply_to, _) -> {
+          let err = error.DecodeFailed(decode_error)
+          process.send(reply_to, Error(err))
+          ref.stop(state.counter)
+          stratus.stop()
+        }
+        _ -> {
+          let next =
+            state.handlers.on_error(
+              state.user_state,
+              error.DecodeFailed(decode_error),
+            )
+          apply_next(state, next)
+        }
+      }
+  }
+}
+
+fn handle_join_reply(
+  state: RuntimeState(state),
+  reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+  join_ref: String,
+  incoming: Incoming,
+) -> stratus.Next(RuntimeState(state), Command(state)) {
+  case incoming.event, incoming.ref {
+    event, Some(reply_ref)
+      if event == state.config.codec.reply_event && reply_ref == join_ref
+    -> complete_join(state, reply_to, join_ref, incoming)
+    _, _ -> stratus.continue(state)
+  }
+}
+
+fn complete_join(
+  state: RuntimeState(state),
+  reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+  join_ref: String,
+  incoming: Incoming,
+) -> stratus.Next(RuntimeState(state), Command(state)) {
+  case decode_reply_status(incoming.payload) {
+    Ok("ok") ->
+      case decode_reply_response(incoming.payload) {
+        Ok(reply) -> {
+          let next = state.handlers.on_joined(state.user_state, reply)
+          process.send(reply_to, Ok(Nil))
+          let joined_state = RuntimeState(..state, join_state: Joined(join_ref))
+          apply_next(joined_state, next)
+        }
+        Error(_) -> {
+          process.send(reply_to, Error(error.JoinRejected("malformed reply")))
+          ref.stop(state.counter)
+          stratus.stop()
+        }
+      }
+    Ok(other) -> {
+      process.send(reply_to, Error(error.JoinRejected(other)))
+      ref.stop(state.counter)
+      stratus.stop()
+    }
+    Error(_) -> {
+      process.send(reply_to, Error(error.JoinRejected("malformed reply")))
+      ref.stop(state.counter)
+      stratus.stop()
+    }
+  }
+}
+
+fn handle_joined_incoming(
+  state: RuntimeState(state),
+  incoming: Incoming,
+) -> stratus.Next(RuntimeState(state), Command(state)) {
+  case incoming.event {
+    event
+      if event == state.config.codec.reply_event
+      && incoming.topic == state.config.codec.heartbeat_topic
+    -> stratus.continue(state)
+    event
+      if event == state.config.codec.close_event
+      || event == state.config.codec.error_event
+    -> {
+      let next = state.handlers.on_error(state.user_state, error.ChannelClosed)
+      apply_next(RuntimeState(..state, join_state: Closing), next)
+    }
+    _ -> {
+      let next = state.handlers.on_message(state.user_state, incoming)
+      apply_next(state, next)
+    }
+  }
+}
+
+fn apply_next(
+  state: RuntimeState(state),
+  next: Next(state),
+) -> stratus.Next(RuntimeState(state), Command(state)) {
+  case next {
+    Continue(user_state) ->
+      stratus.continue(RuntimeState(..state, user_state: user_state))
+    Stop -> {
+      ref.stop(state.counter)
+      stratus.stop()
+    }
+  }
+}
+
+fn handle_transport_closed(
+  state: RuntimeState(state),
+  _reason: stratus.CloseReason,
+) {
+  case state.join_state {
+    Joining(reply_to, _) -> process.send(reply_to, Error(error.ChannelClosed))
+    _ -> Nil
+  }
+  let _ = state.handlers.on_closed(state.user_state)
+  ref.stop(state.counter)
+  Nil
+}
+
+fn push_legacy(
+  channel: Channel(state),
+  event: String,
+  payload: json.Json,
+) -> Result(Nil, error.AquamarineError) {
+  let assert LegacyChannel(transport:, topic:, join_ref:, counter:, codec:, ..) =
+    channel
+  use ref <- result.try(
+    ref.next(counter)
+    |> result.map_error(fn(_) { error.ChannelClosed }),
+  )
+  let text = codec.encode_push(join_ref, ref, topic, event, payload)
+  transport.send_text(text)
 }
 
 fn do_receive(
   channel: Channel(state),
 ) -> Result(Incoming, error.AquamarineError) {
-  use frame <- result.try(channel.transport.receive())
+  let assert LegacyChannel(transport:, codec:, ..) = channel
+  use frame <- result.try(transport.receive())
 
   case frame {
     transport.Text(text) ->
-      case channel.codec.decode(text) {
+      case codec.decode(text) {
         Ok(incoming) -> handle_incoming(channel, incoming)
         Error(err) -> Error(error.DecodeFailed(err))
       }
@@ -201,23 +616,21 @@ fn handle_incoming(
   channel: Channel(state),
   incoming: Incoming,
 ) -> Result(Incoming, error.AquamarineError) {
+  let assert LegacyChannel(codec:, ..) = channel
   case incoming.event {
-    e if e == channel.codec.close_event -> Error(error.ChannelClosed)
-    e if e == channel.codec.error_event -> Error(error.ChannelClosed)
-    e
-      if e == channel.codec.reply_event
-      && incoming.topic == channel.codec.heartbeat_topic
-    -> do_receive(channel)
+    e if e == codec.close_event -> Error(error.ChannelClosed)
+    e if e == codec.error_event -> Error(error.ChannelClosed)
+    e if e == codec.reply_event && incoming.topic == codec.heartbeat_topic ->
+      do_receive(channel)
     _ -> Ok(incoming)
   }
 }
 
-/// Close the channel and underlying transport. The heartbeat and counter
-/// actors are stopped first.
-pub fn close(channel: Channel(state)) -> Result(Nil, error.AquamarineError) {
-  heartbeat.stop(channel.heartbeat)
-  ref.stop(channel.counter)
-  channel.transport.close()
+fn close_legacy(channel: Channel(state)) -> Result(Nil, error.AquamarineError) {
+  let assert LegacyChannel(transport:, counter:, heartbeat: hb, ..) = channel
+  heartbeat.stop(hb)
+  ref.stop(counter)
+  transport.close()
 }
 
 fn cleanup_connect(tx: Transport, counter: ref.Counter) -> Nil {
@@ -226,7 +639,9 @@ fn cleanup_connect(tx: Transport, counter: ref.Counter) -> Nil {
   Nil
 }
 
-fn start_counter(tx: Transport) -> Result(ref.Counter, error.AquamarineError) {
+fn start_legacy_counter(
+  tx: Transport,
+) -> Result(ref.Counter, error.AquamarineError) {
   case ref.start() {
     Ok(counter) -> Ok(counter)
     Error(_) -> {
@@ -335,6 +750,15 @@ fn decode_reply_status(payload: Dynamic) -> Result(String, Nil) {
   let decoder = {
     use status <- decode.field("status", decode.string)
     decode.success(status)
+  }
+  decode.run(payload, decoder)
+  |> result.map_error(fn(_) { Nil })
+}
+
+fn decode_reply_response(payload: Dynamic) -> Result(Dynamic, Nil) {
+  let decoder = {
+    use response <- decode.field("response", decode.dynamic)
+    decode.success(response)
   }
   decode.run(payload, decoder)
   |> result.map_error(fn(_) { Nil })

@@ -1,180 +1,174 @@
-//// End-to-end integration tests for Aquamarine's Phoenix codec against a real
-//// Beryl server running in the same VM. Verifies the full
-//// phx_join -> phx_reply handshake plus a server-initiated push, plus a
-//// client push -> server reply round-trip and a join rejection.
+//// Integration coverage for the public callback runtime against a real Beryl
+//// server running in the same VM.
 
-import aquamarine/channel
+import aquamarine
+import aquamarine/codec.{type Incoming}
 import aquamarine/error
 import aquamarine/phoenix
-import aquamarine/transport
-import beryl
-import beryl/channel as bchannel
-import beryl/transport/mist as mist_transport
-import beryl/wire
-import gleam/bytes_tree
 import gleam/dynamic/decode
 import gleam/erlang/process
-import gleam/http/response
 import gleam/json
-import gleam/option.{Some}
-import gleam/result
 import gleeunit/should
-import mist
+import support/channel_server
 
-const test_port: Int = 47_891
+const test_port: Int = 47_895
 
 const test_path: String = "/socket/websocket"
 
+const unused_port: Int = 47_896
+
+type Event {
+  Joined(String)
+  Message(String)
+  ErrorSeen(error.AquamarineError)
+  Closed
+}
+
+type State {
+  State(events: process.Subject(Event))
+}
+
 pub fn integration_tests_test() {
-  let channels = start_beryl()
-  let _server = start_mist(channels)
-
-  // joins a channel and receives a server push
-  let assert Ok(ch) =
-    channel.connect_with(
-      transport.gluegun_connector(
-        host: "127.0.0.1",
-        port: test_port,
-        path: test_path,
-      ),
-      "test:lobby",
-      json.object([#("hello", json.bool(True))]),
-      phoenix.codec(),
-      30_000,
-    )
-
-  // Give the server a moment to register the socket as a subscriber.
-  process.sleep(50)
-
-  beryl.broadcast(
-    channels,
+  let events = process.new_subject()
+  let echo_events = process.new_subject()
+  let seen = process.new_subject()
+  let server = channel_server.start(test_port)
+  channel_server.register_ok(
+    server,
     "test:lobby",
-    "tick",
-    json.object([#("n", json.int(42))]),
+    json.object([#("welcome", json.string("ok"))]),
   )
+  channel_server.register_rejected(server, "test:rejected")
+  channel_server.register_echo(server, "test:echo", seen)
 
-  let assert Ok(incoming) = channel.receive(ch)
-  incoming.event |> should.equal("tick")
-  incoming.topic |> should.equal("test:lobby")
-  decode_n(incoming.payload) |> should.equal(Ok(42))
-
-  let assert Ok(Nil) = channel.close(ch)
-
-  // round-trips a client push through the public facade
   let assert Ok(ch) =
-    channel.connect_with(
-      transport.gluegun_connector(
+    aquamarine.connect(
+      aquamarine.config(
         host: "127.0.0.1",
         port: test_port,
         path: test_path,
+        topic: "test:lobby",
+        payload: json.object([]),
+        codec: phoenix.codec(),
       ),
-      "test:echo",
-      json.object([]),
-      phoenix.codec(),
-      30_000,
+      handlers(),
+      State(events),
     )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Joined("ok")))
+
+  let assert Ok(Nil) = aquamarine.close(ch)
+
+  let assert Ok(ch) =
+    aquamarine.connect(
+      aquamarine.config(
+        host: "127.0.0.1",
+        port: test_port,
+        path: test_path,
+        topic: "test:echo",
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      handlers(),
+      State(echo_events),
+    )
+
+  process.receive(echo_events, 1000)
+  |> should.equal(Ok(Joined("ok")))
 
   let assert Ok(Nil) =
-    channel.push(ch, "say", json.object([#("body", json.string("hello"))]))
+    aquamarine.push(ch, "say", json.object([#("body", json.string("hello"))]))
+  process.receive(seen, 1000)
+  |> should.equal(Ok("say"))
+  process.receive(echo_events, 1000)
+  |> should.equal(Ok(Message(phoenix.codec().reply_event)))
 
-  let assert Ok(incoming) = channel.receive(ch)
-  incoming.event |> should.equal(phoenix.codec().reply_event)
-  incoming.topic |> should.equal("test:echo")
-  decode_body(incoming.payload) |> should.equal(Ok("hello"))
+  let assert Ok(Nil) = aquamarine.close(ch)
 
-  let assert Ok(Nil) = channel.close(ch)
-
-  // surfaces a server-side join rejection
-  channel.connect_with(
-    transport.gluegun_connector(
+  aquamarine.connect(
+    aquamarine.config(
       host: "127.0.0.1",
       port: test_port,
       path: test_path,
+      topic: "test:rejected",
+      payload: json.object([]),
+      codec: phoenix.codec(),
     ),
-    "test:rejected",
-    json.object([]),
-    phoenix.codec(),
-    30_000,
+    handlers(),
+    State(process.new_subject()),
   )
   |> should.equal(Error(error.JoinRejected("error")))
-}
 
-fn start_beryl() -> beryl.Channels {
-  let assert Ok(channels) = beryl.start(beryl.config(wire.phoenix_codec()))
-
-  let lobby_channel =
-    bchannel.new(fn(_topic, _payload, sock) {
-      bchannel.JoinOk(
-        reply: Some(json.object([#("welcome", json.bool(True))])),
-        socket: sock,
-      )
-    })
-  let assert Ok(_) = beryl.register(channels, "test:lobby", lobby_channel)
-
-  let echo_channel =
-    bchannel.new(fn(_topic, _payload, sock) {
-      bchannel.JoinOk(reply: Some(json.object([])), socket: sock)
-    })
-    |> bchannel.with_handle_in(fn(_event, payload, sock) {
-      let body =
-        bchannel.decode_payload(payload, {
-          use body <- decode.field("body", decode.string)
-          decode.success(body)
-        })
-        |> result.unwrap("")
-      bchannel.Reply(
-        event: "reply",
-        payload: json.object([#("body", json.string(body))]),
-        socket: sock,
-      )
-    })
-  let assert Ok(_) = beryl.register(channels, "test:echo", echo_channel)
-
-  let rejected_channel =
-    bchannel.new(fn(_topic, _payload, _sock) {
-      bchannel.JoinError(reason: bchannel.error("nope"))
-    })
-  let assert Ok(_) = beryl.register(channels, "test:rejected", rejected_channel)
-
-  channels
-}
-
-fn start_mist(channels: beryl.Channels) {
-  let handler = fn(req) {
-    mist_transport.upgrade(
-      req,
-      channels,
-      mist_transport.default_config(test_path),
-      fn() {
-        response.new(404)
-        |> response.set_body(mist.Bytes(bytes_tree.new()))
-      },
+  case
+    aquamarine.connect(
+      aquamarine.config(
+        host: "127.0.0.1",
+        port: test_port,
+        path: "/wrong",
+        topic: "test:lobby",
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      handlers(),
+      State(process.new_subject()),
     )
+  {
+    Error(error.Transport(error.HandshakeFailed(_))) -> Nil
+    other ->
+      other
+      |> should.equal(
+        Error(error.Transport(error.HandshakeFailed("unexpected"))),
+      )
   }
 
-  let assert Ok(server) =
-    mist.new(handler)
-    |> mist.port(test_port)
-    |> mist.start
+  case
+    aquamarine.connect(
+      aquamarine.config(
+        host: "127.0.0.1",
+        port: unused_port,
+        path: test_path,
+        topic: "test:lobby",
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      handlers(),
+      State(process.new_subject()),
+    )
+  {
+    Error(error.Transport(error.SocketConnectionFailed(_))) -> Nil
+    other ->
+      other
+      |> should.equal(
+        Error(error.Transport(error.SocketConnectionFailed("unexpected"))),
+      )
+  }
 
-  server
+  channel_server.stop(server)
 }
 
-fn decode_n(payload) -> Result(Int, Nil) {
-  let decoder = {
-    use n <- decode.field("n", decode.int)
-    decode.success(n)
-  }
-  decode.run(payload, decoder)
-  |> result.map_error(fn(_) { Nil })
-}
-
-fn decode_body(payload) -> Result(String, Nil) {
-  // The server replies with `{"status": "ok", "response": <our payload>}`.
-  let decoder = {
-    use body <- decode.subfield(["response", "body"], decode.string)
-    decode.success(body)
-  }
-  decode.run(payload, decoder)
-  |> result.map_error(fn(_) { Nil })
+fn handlers() {
+  aquamarine.handlers(
+    on_joined: fn(state: State, payload) {
+      let decoder = {
+        use welcome <- decode.field("welcome", decode.string)
+        decode.success(welcome)
+      }
+      let assert Ok(value) = decode.run(payload, decoder)
+      process.send(state.events, Joined(value))
+      aquamarine.continue(state)
+    },
+    on_message: fn(state: State, incoming: Incoming) {
+      process.send(state.events, Message(incoming.event))
+      aquamarine.continue(state)
+    },
+    on_error: fn(state: State, err) {
+      process.send(state.events, ErrorSeen(err))
+      aquamarine.continue(state)
+    },
+    on_closed: fn(state: State) {
+      process.send(state.events, Closed)
+      aquamarine.continue(state)
+    },
+  )
 }
