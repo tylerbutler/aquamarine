@@ -33,6 +33,8 @@ const stop_test_port: Int = 47_897
 
 const callback_receive_test_port: Int = 47_898
 
+const callback_push_test_port: Int = 47_904
+
 type TestEvent {
   Joined(String)
   Message(String)
@@ -426,6 +428,41 @@ pub fn channel_tests_test() {
 
   let assert Ok(Nil) = channel.close(ch)
   fake.shutdown(f)
+
+  // channel.push: reaches the server and delivers its reply to callbacks
+  let events = process.new_subject()
+  let seen = process.new_subject()
+  let server = channel_server.start(callback_push_test_port)
+  channel_server.register_echo(server, test_topic, seen)
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: callback_push_test_port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      callback_handlers(),
+      CallbackState(events),
+    )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Joined("ok")))
+
+  let assert Ok(Nil) =
+    channel.push(ch, "say", json.object([#("body", json.string("hi"))]))
+
+  process.receive(seen, 1000)
+  |> should.equal(Ok("say"))
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Message(phoenix.codec().reply_event)))
+
+  let assert Ok(Nil) = channel.close(ch)
+  let _ = channel_server.stop(server)
 
   // channel.receive: returns the next application frame
   let f = fake.start()
