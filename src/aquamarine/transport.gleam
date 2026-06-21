@@ -14,9 +14,9 @@
 
 import aquamarine/error.{type AquamarineError}
 import gleam/result
-import gluegun/error as gluegun_error
-import gluegun/message
-import gluegun/websocket
+import stratus/error as stratus_error
+import stratus/message
+import stratus/websocket
 
 /// Application-level frame surfaced to the channel layer.
 ///
@@ -49,7 +49,7 @@ pub type Connector =
 
 /// Build a Gluegun-backed connector for the given host/port/path.
 @internal
-pub fn gluegun_connector(
+pub fn stratus_connector(
   host host: String,
   port port: Int,
   path path: String,
@@ -57,7 +57,7 @@ pub fn gluegun_connector(
   fn() {
     use socket <- result.try(
       websocket.connect(host:, port:, path:, options: websocket.options())
-      |> result.map_error(from_gluegun),
+      |> result.map_error(from_stratus),
     )
     Ok(from_socket(socket))
   }
@@ -78,34 +78,31 @@ fn from_socket(socket: websocket.Socket) -> Transport {
         // Gluegun's receive_app_frame answers pings and skips pongs, so
         // these arms are unreachable in production. Map them defensively.
         Ok(message.Ping(_)) | Ok(message.Pong(_)) -> Ok(Closed)
-        Error(err) -> Error(from_gluegun(err))
+        Error(err) -> Error(from_stratus(err))
       }
     },
     close: fn() {
       websocket.close(socket)
-      |> result.map_error(from_gluegun)
+      |> result.map_error(from_stratus)
     },
   )
 }
 
-/// Map a Gluegun error onto Aquamarine's transport-error surface.
+/// Map a Stratus error onto Aquamarine's transport-error surface.
 @internal
-pub fn from_gluegun(err: gluegun_error.GluegunError) -> AquamarineError {
+pub fn from_stratus(err: stratus_error.StratusError) -> AquamarineError {
   case err {
-    gluegun_error.Timeout -> error.Transport(error.Timeout)
-    gluegun_error.ConnectionDown(reason) ->
-      error.Transport(error.ConnectionDown(reason))
-    gluegun_error.ConnectionError(reason) ->
-      error.Transport(error.ConnectionError(reason))
-    gluegun_error.StreamError(reason) ->
-      error.Transport(error.StreamError(reason))
-    gluegun_error.InvalidOptions(reason) ->
-      error.Transport(error.InvalidOptions(reason))
-    gluegun_error.InvalidMessage(reason) ->
-      error.Transport(error.InvalidMessage(reason))
-    gluegun_error.ErlangError(reason) ->
-      error.Transport(error.ErlangError(reason))
-    gluegun_error.DecodeError(reason) ->
-      error.Transport(error.DecodeError(reason))
+    stratus_error.HandshakeFailed(reason) ->
+      error.Transport(error.HandshakeFailed(reason))
+    stratus_error.SocketConnectionFailed(reason) ->
+      error.Transport(error.SocketConnectionFailed(reason))
+    stratus_error.SocketSendFailed(reason) ->
+      error.Transport(error.SocketSendFailed(reason))
+    stratus_error.SocketReceiveFailed(reason) ->
+      error.Transport(error.SocketReceiveFailed(reason))
+    stratus_error.InvalidTransportConfig(reason) ->
+      error.Transport(error.InvalidTransportConfig(reason))
+    stratus_error.UnexpectedTransportFailure(reason) ->
+      error.Transport(error.UnexpectedTransportFailure(reason))
   }
 }

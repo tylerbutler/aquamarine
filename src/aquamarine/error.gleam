@@ -7,29 +7,25 @@
 import aquamarine/codec
 
 pub type TransportError {
-  Timeout
-  ConnectionDown(reason: String)
-  ConnectionError(reason: String)
-  StreamError(reason: String)
-  InvalidOptions(reason: String)
-  InvalidMessage(reason: String)
-  ErlangError(reason: String)
-  DecodeError(reason: String)
+  /// The WebSocket upgrade failed or the Stratus actor could not complete startup.
+  HandshakeFailed(reason: String)
+  /// Opening the underlying socket failed before the channel could join.
+  SocketConnectionFailed(reason: String)
+  /// Sending a WebSocket frame failed.
+  SocketSendFailed(reason: String)
+  /// Receiving a WebSocket frame failed after startup.
+  SocketReceiveFailed(reason: String)
+  /// The host, port, path, scheme, or request configuration was invalid.
+  InvalidTransportConfig(reason: String)
+  /// A transport failure did not fit a stable public category.
+  UnexpectedTransportFailure(reason: String)
 }
 
 pub type AquamarineError {
-  /// Underlying WebSocket transport failure (connect, send, receive, close).
   Transport(TransportError)
-  /// The server rejected the join with the given reason.
   JoinRejected(reason: String)
-  /// The server closed the channel.
   ChannelClosed
-  /// An inbound wire frame could not be decoded.
   DecodeFailed(codec.DecodeError)
-  /// Waited for a reply matching an outbound ref but it never arrived within
-  /// the configured timeout.
   ReplyTimeout
-  /// An internal actor or system failure (e.g. failing to start the ref
-  /// counter or heartbeat actor) prevented the channel from initializing.
   InternalError(reason: String)
 }
