@@ -31,8 +31,7 @@ export default defineConfig({
 			},
 			favicon: "favicon.png",
 			customCss: [
-				"@fontsource/metropolis/400.css",
-				"@fontsource/metropolis/600.css",
+				"@fontsource-variable/commissioner",
 				"./src/styles/fonts.css",
 				"./src/styles/custom.css",
 			],
