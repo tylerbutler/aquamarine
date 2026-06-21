@@ -301,8 +301,7 @@ pub fn receive(
   channel: Channel(state),
 ) -> Result(Incoming, error.AquamarineError) {
   case channel {
-    CallbackChannel(_) ->
-      Error(error.InternalError("callback receive not implemented"))
+    CallbackChannel(_) -> Error(error.ChannelClosed)
     LegacyChannel(..) -> do_receive(channel)
   }
 }
@@ -507,9 +506,23 @@ fn complete_join(
       case decode_reply_response(incoming.payload) {
         Ok(reply) -> {
           let next = state.handlers.on_joined(state.user_state, reply)
-          process.send(reply_to, Ok(Nil))
-          let joined_state = RuntimeState(..state, join_state: Joined(join_ref))
-          apply_next(joined_state, next)
+          case next {
+            Continue(user_state) -> {
+              let joined_state =
+                RuntimeState(
+                  ..state,
+                  user_state: user_state,
+                  join_state: Joined(join_ref),
+                )
+              process.send(reply_to, Ok(Nil))
+              stratus.continue(joined_state)
+            }
+            Stop -> {
+              process.send(reply_to, Error(error.ChannelClosed))
+              ref.stop(state.counter)
+              stratus.stop()
+            }
+          }
         }
         Error(_) -> {
           process.send(reply_to, Error(error.JoinRejected("malformed reply")))

@@ -29,6 +29,10 @@ const join_test_port: Int = 47_893
 
 const rejected_test_port: Int = 47_894
 
+const stop_test_port: Int = 47_897
+
+const callback_receive_test_port: Int = 47_898
+
 type TestEvent {
   Joined(String)
   Message(String)
@@ -99,7 +103,7 @@ fn connect_with_fake(fake_socket: fake.FakeSocket) {
 
 pub fn connect_waits_for_join_and_calls_on_joined_test() {
   let events = process.new_subject()
-  let server = channel_server.start(join_test_port)
+  let server = channel_server.start(callback_receive_test_port)
   channel_server.register_ok(
     server,
     test_topic,
@@ -110,7 +114,7 @@ pub fn connect_waits_for_join_and_calls_on_joined_test() {
     channel.connect(
       channel.config(
         host: "127.0.0.1",
-        port: join_test_port,
+        port: callback_receive_test_port,
         path: "/socket/websocket",
         topic: test_topic,
         payload: json.object([]),
@@ -144,6 +148,35 @@ pub fn connect_surfaces_join_rejection_test() {
     CallbackState(process.new_subject()),
   )
   |> should.equal(Error(error.JoinRejected("error")))
+
+  channel_server.stop(server)
+}
+
+pub fn connect_returns_channel_closed_when_on_joined_stops_test() {
+  let events = process.new_subject()
+  let server = channel_server.start(stop_test_port)
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("stop"))]),
+  )
+
+  channel.connect(
+    channel.config(
+      host: "127.0.0.1",
+      port: stop_test_port,
+      path: "/socket/websocket",
+      topic: test_topic,
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    ),
+    stopping_handlers(),
+    CallbackState(events),
+  )
+  |> should.equal(Error(error.ChannelClosed))
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Joined("stop")))
 
   channel_server.stop(server)
 }
@@ -466,6 +499,34 @@ pub fn channel_tests_test() {
   let assert Ok(Nil) = channel.close(ch)
   fake.shutdown(f)
 
+  // channel.receive: returns ChannelClosed for callback channels
+  let events = process.new_subject()
+  let server = channel_server.start(join_test_port)
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: join_test_port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      callback_handlers(),
+      CallbackState(events),
+    )
+
+  channel.receive(ch) |> should.equal(Error(error.ChannelClosed))
+
+  let assert Ok(Nil) = channel.close(ch)
+  let _ = channel_server.stop(server)
+
   // channel.receive: returns DecodeFailed on a malformed text frame
   let f = fake.start()
   let ch = connect_with_fake(f)
@@ -541,6 +602,32 @@ fn callback_handlers() -> channel.Handlers(CallbackState) {
       let assert Ok(value) = decode.run(payload, decoder)
       process.send(state.events, Joined(value))
       channel.continue(state)
+    },
+    on_message: fn(state: CallbackState, incoming: Incoming) {
+      process.send(state.events, Message(incoming.event))
+      channel.continue(state)
+    },
+    on_error: fn(state: CallbackState, err) {
+      process.send(state.events, ErrorSeen(err))
+      channel.continue(state)
+    },
+    on_closed: fn(state: CallbackState) {
+      process.send(state.events, Closed)
+      channel.continue(state)
+    },
+  )
+}
+
+fn stopping_handlers() -> channel.Handlers(CallbackState) {
+  channel.handlers(
+    on_joined: fn(state: CallbackState, payload) {
+      let decoder = {
+        use welcome <- decode.field("welcome", decode.string)
+        decode.success(welcome)
+      }
+      let assert Ok(value) = decode.run(payload, decoder)
+      process.send(state.events, Joined(value))
+      channel.stop()
     },
     on_message: fn(state: CallbackState, incoming: Incoming) {
       process.send(state.events, Message(incoming.event))
