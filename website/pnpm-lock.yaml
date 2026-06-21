@@ -14,9 +14,9 @@ importers:
       '@astrojs/starlight':
         specifier: ^0.39.2
         version: 0.39.2(astro@6.3.7(@types/node@24.12.4)(rollup@4.60.4)(yaml@2.9.0))(typescript@6.0.3)
-      '@fontsource/metropolis':
-        specifier: ^5.2.5
-        version: 5.2.5
+      '@fontsource-variable/commissioner':
+        specifier: ^5.2.10
+        version: 5.2.10
       astro:
         specifier: ^6.1.4
         version: 6.3.7(@types/node@24.12.4)(rollup@4.60.4)(yaml@2.9.0)
@@ -344,8 +344,8 @@ packages:
     resolution: {integrity: sha512-Au3jSkt66PRwTKTCYm7KzTGfMzUmn1LYPK+cyrytfzjfOPkHpohrLcGYPLsgxV8nzc4vXxt3Ay7MlBrmeIfFLg==}
     engines: {node: '>=16.0'}
 
-  '@fontsource/metropolis@5.2.5':
-    resolution: {integrity: sha512-zAz6XS1ZXVXZadcqsOnToiePAKEiEywxOwILEaE4sRl+pVOFQI/30xMiKvjQae1NRK3TbeKxJAmt+yFkPguXJw==}
+  '@fontsource-variable/commissioner@5.2.10':
+    resolution: {integrity: sha512-I2OzXSgj2rQdhdysZEvcH2zmyO/dmMviSR6tWCMTwFXimtKJctadlmfoF1Pm9w/kSAe3fo9MhTZwppJE0/Xnmw==}
 
   '@iconify/types@2.0.0':
     resolution: {integrity: sha512-+wluvCrRhXrhyOmRDJ3q8mux9JkKy5SJ/v8ol2tu4FVjyYvtEzkc/3pK15ET6RKg4b4w4BmTk1+gsCUhf21Ykg==}
@@ -2974,7 +2974,7 @@ snapshots:
       mdast-util-find-and-replace: 1.1.1
       unist-util-visit: 2.0.3
 
-  '@fontsource/metropolis@5.2.5': {}
+  '@fontsource-variable/commissioner@5.2.10': {}
 
   '@iconify/types@2.0.0': {}
 
