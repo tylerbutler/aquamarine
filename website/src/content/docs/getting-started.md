@@ -9,10 +9,12 @@ pushing a message, receiving a reply, and shutting down.
 
 ## Install
 
-Add Aquamarine to your Gleam project:
+Aquamarine is pre-1.0 and is not published to Hex yet. Until it is, add it as
+a Git dependency in your `gleam.toml`:
 
-```sh
-gleam add aquamarine
+```toml
+[dependencies]
+aquamarine = { git = "https://github.com/tylerbutler/aquamarine.git", ref = "main" }
 ```
 
 Aquamarine targets the Erlang runtime — it relies on OTP actors for its

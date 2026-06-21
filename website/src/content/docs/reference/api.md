@@ -5,8 +5,9 @@ description: The four public functions Aquamarine exposes, with pointers to the 
 
 Aquamarine's public surface is deliberately tiny. The top-level
 [`aquamarine`](https://github.com/tylerbutler/aquamarine/blob/main/src/aquamarine.gleam) module
-re-exports four functions from `aquamarine/channel`; everything else is
-internal.
+re-exports four lifecycle functions from `aquamarine/channel`. Supporting
+modules such as `aquamarine/codec`, `aquamarine/error`, and
+`aquamarine/phoenix` expose the types and codec adapters those functions use.
 
 For the full type signatures, read the
 [source on GitHub](https://github.com/tylerbutler/aquamarine/tree/main/src).

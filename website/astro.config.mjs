@@ -20,6 +20,51 @@ export default defineConfig({
 			},
 			description:
 				"Protocol-agnostic Beryl-style WebSocket channel client for Gleam on the BEAM.",
+			head: [
+				{
+					tag: "meta",
+					attrs: {
+						property: "og:image",
+						content: "https://aquamarine.tylerbutler.com/og-image.png",
+					},
+				},
+				{
+					tag: "meta",
+					attrs: {
+						property: "og:image:width",
+						content: "1200",
+					},
+				},
+				{
+					tag: "meta",
+					attrs: {
+						property: "og:image:height",
+						content: "630",
+					},
+				},
+				{
+					tag: "meta",
+					attrs: {
+						property: "og:image:alt",
+						content:
+							"Aquamarine: a clear channel runtime for Gleam.",
+					},
+				},
+				{
+					tag: "meta",
+					attrs: {
+						name: "twitter:card",
+						content: "summary_large_image",
+					},
+				},
+				{
+					tag: "meta",
+					attrs: {
+						name: "twitter:image",
+						content: "https://aquamarine.tylerbutler.com/og-image.png",
+					},
+				},
+			],
 			lastUpdated: true,
 			logo: {
 				src: "./src/assets/aquamarine-logo.webp",

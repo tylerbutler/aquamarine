@@ -57,9 +57,9 @@ actor.
 ## When things go wrong
 
 - If the ref counter fails to start, `connect` returns
-  `Error(Transport(...))` and tears down the socket.
-- If the heartbeat fails to start, `connect` tears down both the counter
-  and the socket before returning.
+  `Error(InternalError(...))` and tears down the socket.
+- If the heartbeat fails to start, `connect` returns
+  `Error(InternalError(...))` and tears down both the counter and the socket.
 - If the heartbeat fails to send mid-session, the actor stops silently;
   the next `push` or `receive` will surface the underlying transport
   error.
