@@ -59,8 +59,19 @@ h1,
 h2,
 h3,
 .site-title span {
-	font-variation-settings: "wght" 690;
+	font-family: var(--aqua-font-display);
+	font-variation-settings: "wght" 600;
+	letter-spacing: -0.018em;
 	text-wrap: balance;
+}
+
+/* Space Grotesk runs wide; ease tracking back toward neutral at small sizes. */
+h4,
+h5,
+h6 {
+	font-family: var(--aqua-font-display);
+	font-variation-settings: "wght" 600;
+	letter-spacing: -0.008em;
 }
 
 .sl-markdown-content p,

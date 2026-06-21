@@ -1,3 +1,8 @@
 :root {
+	/* Body & UI: humanist sans, highly readable in long reference passages. */
 	--sl-font: "Commissioner Variable", var(--sl-font-system);
+	/* Code: technical monospace with real character (Gleam samples live here). */
+	--sl-font-mono: "JetBrains Mono Variable", var(--sl-font-system-mono);
+	/* Display: geometric grotesque for headings — systemic, protocol energy. */
+	--aqua-font-display: "Space Grotesk Variable", var(--sl-font-system);
 }
