@@ -12,6 +12,7 @@
 //// `send_text` is fire-and-forget.
 
 import aquamarine/codec.{type Codec, type Incoming}
+import aquamarine/error as error
 import aquamarine/error.{type AquamarineError}
 import aquamarine/heartbeat
 import aquamarine/ref
@@ -22,10 +23,35 @@ import gleam/json
 import gleam/option.{Some}
 import gleam/result
 
+pub type Config {
+  Config(
+    host: String,
+    port: Int,
+    path: String,
+    topic: String,
+    payload: json.Json,
+    codec: Codec,
+  )
+}
+
+pub type Handlers(state) {
+  Handlers(
+    on_joined: fn(state, Dynamic) -> Next(state),
+    on_message: fn(state, Incoming) -> Next(state),
+    on_error: fn(state, AquamarineError) -> Next(state),
+    on_closed: fn(state) -> Next(state),
+  )
+}
+
+pub type Next(state) {
+  Continue(state)
+  Stop
+}
+
 /// Default heartbeat interval, matching the Phoenix JS client.
 const default_heartbeat_ms: Int = 30_000
 
-pub opaque type Channel {
+pub opaque type Channel(state) {
   Channel(
     transport: Transport,
     topic: String,
@@ -34,6 +60,34 @@ pub opaque type Channel {
     heartbeat: heartbeat.Heartbeat,
     codec: Codec,
   )
+}
+
+pub fn continue(state: state) -> Next(state) {
+  Continue(state)
+}
+
+pub fn stop() -> Next(state) {
+  Stop
+}
+
+pub fn config(
+  host host: String,
+  port port: Int,
+  path path: String,
+  topic topic: String,
+  payload payload: json.Json,
+  codec codec: Codec,
+) -> Config {
+  Config(host:, port:, path:, topic:, payload:, codec:)
+}
+
+pub fn handlers(
+  on_joined on_joined: fn(state, Dynamic) -> Next(state),
+  on_message on_message: fn(state, Incoming) -> Next(state),
+  on_error on_error: fn(state, AquamarineError) -> Next(state),
+  on_closed on_closed: fn(state) -> Next(state),
+) -> Handlers(state) {
+  Handlers(on_joined:, on_message:, on_error:, on_closed:)
 }
 
 /// Open a WebSocket to a compatible server, join the given topic with the
@@ -56,6 +110,14 @@ pub fn connect(
     codec,
     default_heartbeat_ms,
   )
+}
+
+pub fn connect(
+  _config: Config,
+  _handlers: Handlers(state),
+  _initial_state: state,
+) -> Result(Channel(state), AquamarineError) {
+  Error(error.InternalError("callback runtime not implemented"))
 }
 
 /// Like [`connect`](#connect) but takes a `Connector` and an explicit
@@ -114,7 +176,7 @@ pub fn connect_with(
 /// Returns `Ok(Nil)` once the frame is handed to the transport. This does
 /// **not** wait for a reply.
 pub fn push(
-  channel: Channel,
+  channel: Channel(state),
   event: String,
   payload: json.Json,
 ) -> Result(Nil, AquamarineError) {
@@ -138,11 +200,11 @@ pub fn push(
 /// Skips heartbeat replies so the caller only sees real channel activity.
 /// Returns `Error(ChannelClosed)` if the server sent a close/error event, or
 /// the socket itself closed.
-pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
+pub fn receive(channel: Channel(state)) -> Result(Incoming, AquamarineError) {
   do_receive(channel)
 }
 
-fn do_receive(channel: Channel) -> Result(Incoming, AquamarineError) {
+fn do_receive(channel: Channel(state)) -> Result(Incoming, AquamarineError) {
   use frame <- result.try(channel.transport.receive())
 
   case frame {
@@ -157,7 +219,7 @@ fn do_receive(channel: Channel) -> Result(Incoming, AquamarineError) {
 }
 
 fn handle_incoming(
-  channel: Channel,
+  channel: Channel(state),
   incoming: Incoming,
 ) -> Result(Incoming, AquamarineError) {
   case incoming.event {
@@ -173,7 +235,7 @@ fn handle_incoming(
 
 /// Close the channel and underlying transport. The heartbeat and counter
 /// actors are stopped first.
-pub fn close(channel: Channel) -> Result(Nil, AquamarineError) {
+pub fn close(channel: Channel(state)) -> Result(Nil, AquamarineError) {
   heartbeat.stop(channel.heartbeat)
   ref.stop(channel.counter)
   channel.transport.close()

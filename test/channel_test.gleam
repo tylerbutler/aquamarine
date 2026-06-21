@@ -9,6 +9,7 @@
 import aquamarine/channel
 import aquamarine/error
 import aquamarine/phoenix
+import channel_api_test
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
@@ -452,6 +453,8 @@ pub fn channel_tests_test() {
   // fake socket is shut down.
   process.sleep(5)
   fake.shutdown(f)
+
+  channel_api_test.channel_api_tests_test()
 }
 
 fn decode_n(payload) -> Result(Int, Nil) {
