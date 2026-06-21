@@ -9,7 +9,6 @@
 import aquamarine/channel
 import aquamarine/error
 import aquamarine/phoenix
-import channel_api_test
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
@@ -66,7 +65,7 @@ fn malformed_reply(join_ref: String) -> String {
 /// Connect a channel through a fake socket, scripting a successful join
 /// reply on whatever ref is allocated first (always `"1"` from a fresh
 /// `ref.start`).
-fn connect_with_fake(fake_socket: fake.FakeSocket) -> channel.Channel {
+fn connect_with_fake(fake_socket: fake.FakeSocket) {
   fake.enqueue_text(fake_socket, ok_join_reply("1"))
   let assert Ok(ch) =
     channel.connect_with(
@@ -453,8 +452,6 @@ pub fn channel_tests_test() {
   // fake socket is shut down.
   process.sleep(5)
   fake.shutdown(f)
-
-  channel_api_test.channel_api_tests_test()
 }
 
 fn decode_n(payload) -> Result(Int, Nil) {

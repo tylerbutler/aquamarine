@@ -1,19 +1,19 @@
 import aquamarine
-import aquamarine/channel.{type Config, type Handlers}
-import aquamarine/codec.{type Incoming}
-import aquamarine/error as error
-import aquamarine/error.{type AquamarineError}
+import aquamarine/channel
+import aquamarine/codec
+import aquamarine/error
 import aquamarine/phoenix
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
+import gleam/option.{None}
 import gleeunit/should
 
 type State {
   State(joined: Bool, messages: Int, errors: Int, closed: Bool)
 }
 
-pub fn channel_api_tests_test() {
+pub fn channel_api_test() {
   let config =
     aquamarine.config(
       host: "127.0.0.1",
@@ -32,15 +32,15 @@ pub fn channel_api_tests_test() {
       on_closed: on_closed,
     )
 
-  let assert Config(host, port, path, topic, payload, codec) = config
+  let channel.Config(host, port, path, topic, payload, codec_value) = config
   host |> should.equal("127.0.0.1")
   port |> should.equal(47_891)
   path |> should.equal("/socket/websocket")
   topic |> should.equal("test:lobby")
   payload |> should.equal(json.object([]))
-  codec.join_event |> should.equal(phoenix.codec().join_event)
+  codec_value.join_event |> should.equal(phoenix.codec().join_event)
 
-  let assert Handlers(
+  let channel.Handlers(
     on_joined: joined,
     on_message: message,
     on_error: errored,
@@ -55,7 +55,7 @@ pub fn channel_api_tests_test() {
 
   message(
     initial,
-    Incoming(
+    codec.Incoming(
       join_ref: None,
       ref: None,
       topic: "test:lobby",
@@ -73,18 +73,17 @@ pub fn channel_api_tests_test() {
 
   let _ = aquamarine.continue(initial)
   let _ = aquamarine.stop()
-  let _ = aquamarine.connect(config, handlers, initial)
 }
 
 fn on_joined(state: State, _payload: Dynamic) {
   aquamarine.continue(State(..state, joined: True))
 }
 
-fn on_message(state: State, _incoming: Incoming) {
+fn on_message(state: State, _incoming: codec.Incoming) {
   aquamarine.continue(State(..state, messages: state.messages + 1))
 }
 
-fn on_error(state: State, _error: AquamarineError) {
+fn on_error(state: State, _error: error.AquamarineError) {
   aquamarine.continue(State(..state, errors: state.errors + 1))
 }
 

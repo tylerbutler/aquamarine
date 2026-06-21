@@ -1,7 +1,6 @@
 //// Protocol-agnostic channel WebSocket client for Gleam.
 ////
-//// This module is the public facade. It re-exports the channel lifecycle
-//// functions from `aquamarine/channel`.
+//// This module is the public facade for the callback-based channel API.
 
 import aquamarine/channel.{type Channel, type Config, type Handlers, type Next}
 import aquamarine/codec.{type Codec, type Incoming}
@@ -39,18 +38,6 @@ pub fn stop() -> Next(state) {
 
 /// Re-export of [`channel.connect`](aquamarine/channel.html#connect).
 pub fn connect(
-  host host: String,
-  port port: Int,
-  path path: String,
-  topic topic: String,
-  payload payload: json.Json,
-  codec codec: Codec,
-) -> Result(Channel, AquamarineError) {
-  channel.connect(host:, port:, path:, topic:, payload:, codec:)
-}
-
-/// Re-export of the callback-based [`channel.connect`](aquamarine/channel.html#connect).
-pub fn connect(
   config: Config,
   handlers: Handlers(state),
   initial_state: state,
@@ -60,19 +47,14 @@ pub fn connect(
 
 /// Re-export of [`channel.push`](aquamarine/channel.html#push).
 pub fn push(
-  channel: Channel,
+  channel: Channel(state),
   event: String,
   payload: json.Json,
 ) -> Result(Nil, AquamarineError) {
   channel.push(channel, event, payload)
 }
 
-/// Re-export of [`channel.receive`](aquamarine/channel.html#receive).
-pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
-  channel.receive(channel)
-}
-
 /// Re-export of [`channel.close`](aquamarine/channel.html#close).
-pub fn close(channel: Channel) -> Result(Nil, AquamarineError) {
+pub fn close(channel: Channel(state)) -> Result(Nil, AquamarineError) {
   channel.close(channel)
 }

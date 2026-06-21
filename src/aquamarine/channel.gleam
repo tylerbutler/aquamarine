@@ -12,8 +12,7 @@
 //// `send_text` is fire-and-forget.
 
 import aquamarine/codec.{type Codec, type Incoming}
-import aquamarine/error as error
-import aquamarine/error.{type AquamarineError}
+import aquamarine/error
 import aquamarine/heartbeat
 import aquamarine/ref
 import aquamarine/transport.{type Connector, type Transport}
@@ -38,7 +37,7 @@ pub type Handlers(state) {
   Handlers(
     on_joined: fn(state, Dynamic) -> Next(state),
     on_message: fn(state, Incoming) -> Next(state),
-    on_error: fn(state, AquamarineError) -> Next(state),
+    on_error: fn(state, error.AquamarineError) -> Next(state),
     on_closed: fn(state) -> Next(state),
   )
 }
@@ -49,8 +48,6 @@ pub type Next(state) {
 }
 
 /// Default heartbeat interval, matching the Phoenix JS client.
-const default_heartbeat_ms: Int = 30_000
-
 pub opaque type Channel(state) {
   Channel(
     transport: Transport,
@@ -84,39 +81,17 @@ pub fn config(
 pub fn handlers(
   on_joined on_joined: fn(state, Dynamic) -> Next(state),
   on_message on_message: fn(state, Incoming) -> Next(state),
-  on_error on_error: fn(state, AquamarineError) -> Next(state),
+  on_error on_error: fn(state, error.AquamarineError) -> Next(state),
   on_closed on_closed: fn(state) -> Next(state),
 ) -> Handlers(state) {
   Handlers(on_joined:, on_message:, on_error:, on_closed:)
-}
-
-/// Open a WebSocket to a compatible server, join the given topic with the
-/// supplied payload, and return a `Channel` ready for use.
-///
-/// Blocks until either a reply matching the join arrives, or a transport error
-/// / non-ok status is observed.
-pub fn connect(
-  host host: String,
-  port port: Int,
-  path path: String,
-  topic topic: String,
-  payload payload: json.Json,
-  codec codec: Codec,
-) -> Result(Channel, AquamarineError) {
-  connect_with(
-    transport.gluegun_connector(host:, port:, path:),
-    topic,
-    payload,
-    codec,
-    default_heartbeat_ms,
-  )
 }
 
 pub fn connect(
   _config: Config,
   _handlers: Handlers(state),
   _initial_state: state,
-) -> Result(Channel(state), AquamarineError) {
+) -> Result(Channel(state), error.AquamarineError) {
   Error(error.InternalError("callback runtime not implemented"))
 }
 
@@ -131,7 +106,7 @@ pub fn connect_with(
   payload: json.Json,
   codec: Codec,
   heartbeat_ms: Int,
-) -> Result(Channel, AquamarineError) {
+) -> Result(Channel(state), error.AquamarineError) {
   use tx <- result.try(connector())
 
   use counter <- result.try(start_counter(tx))
@@ -179,7 +154,7 @@ pub fn push(
   channel: Channel(state),
   event: String,
   payload: json.Json,
-) -> Result(Nil, AquamarineError) {
+) -> Result(Nil, error.AquamarineError) {
   use ref <- result.try(
     ref.next(channel.counter)
     |> result.map_error(fn(_) { error.ChannelClosed }),
@@ -200,11 +175,15 @@ pub fn push(
 /// Skips heartbeat replies so the caller only sees real channel activity.
 /// Returns `Error(ChannelClosed)` if the server sent a close/error event, or
 /// the socket itself closed.
-pub fn receive(channel: Channel(state)) -> Result(Incoming, AquamarineError) {
+pub fn receive(
+  channel: Channel(state),
+) -> Result(Incoming, error.AquamarineError) {
   do_receive(channel)
 }
 
-fn do_receive(channel: Channel(state)) -> Result(Incoming, AquamarineError) {
+fn do_receive(
+  channel: Channel(state),
+) -> Result(Incoming, error.AquamarineError) {
   use frame <- result.try(channel.transport.receive())
 
   case frame {
@@ -221,7 +200,7 @@ fn do_receive(channel: Channel(state)) -> Result(Incoming, AquamarineError) {
 fn handle_incoming(
   channel: Channel(state),
   incoming: Incoming,
-) -> Result(Incoming, AquamarineError) {
+) -> Result(Incoming, error.AquamarineError) {
   case incoming.event {
     e if e == channel.codec.close_event -> Error(error.ChannelClosed)
     e if e == channel.codec.error_event -> Error(error.ChannelClosed)
@@ -235,7 +214,7 @@ fn handle_incoming(
 
 /// Close the channel and underlying transport. The heartbeat and counter
 /// actors are stopped first.
-pub fn close(channel: Channel(state)) -> Result(Nil, AquamarineError) {
+pub fn close(channel: Channel(state)) -> Result(Nil, error.AquamarineError) {
   heartbeat.stop(channel.heartbeat)
   ref.stop(channel.counter)
   channel.transport.close()
@@ -247,7 +226,7 @@ fn cleanup_connect(tx: Transport, counter: ref.Counter) -> Nil {
   Nil
 }
 
-fn start_counter(tx: Transport) -> Result(ref.Counter, AquamarineError) {
+fn start_counter(tx: Transport) -> Result(ref.Counter, error.AquamarineError) {
   case ref.start() {
     Ok(counter) -> Ok(counter)
     Error(_) -> {
@@ -260,7 +239,7 @@ fn start_counter(tx: Transport) -> Result(ref.Counter, AquamarineError) {
 fn next_join_ref(
   tx: Transport,
   counter: ref.Counter,
-) -> Result(String, AquamarineError) {
+) -> Result(String, error.AquamarineError) {
   case ref.next(counter) {
     Ok(join_ref) -> Ok(join_ref)
     Error(_) -> {
@@ -274,7 +253,7 @@ fn send_join(
   tx: Transport,
   counter: ref.Counter,
   join_frame: String,
-) -> Result(Nil, AquamarineError) {
+) -> Result(Nil, error.AquamarineError) {
   case tx.send_text(join_frame) {
     Ok(_) -> Ok(Nil)
     Error(err) -> {
@@ -289,7 +268,7 @@ fn await_join_reply_with_cleanup(
   counter: ref.Counter,
   join_ref: String,
   codec: Codec,
-) -> Result(Nil, AquamarineError) {
+) -> Result(Nil, error.AquamarineError) {
   case await_join_reply(tx, join_ref, codec) {
     Ok(_) -> Ok(Nil)
     Error(err) -> {
@@ -305,7 +284,7 @@ fn start_heartbeat(
   send_fn: fn(String) -> Result(Nil, Nil),
   codec: Codec,
   interval_ms: Int,
-) -> Result(heartbeat.Heartbeat, AquamarineError) {
+) -> Result(heartbeat.Heartbeat, error.AquamarineError) {
   case heartbeat.start(send_fn, interval_ms, counter, codec) {
     Ok(hb) -> Ok(hb)
     Error(_) -> {
@@ -319,7 +298,7 @@ fn await_join_reply(
   tx: Transport,
   join_ref: String,
   codec: Codec,
-) -> Result(Nil, AquamarineError) {
+) -> Result(Nil, error.AquamarineError) {
   use frame <- result.try(tx.receive())
 
   case frame {
@@ -338,7 +317,7 @@ fn match_join_reply(
   join_ref: String,
   incoming: Incoming,
   codec: Codec,
-) -> Result(Nil, AquamarineError) {
+) -> Result(Nil, error.AquamarineError) {
   case incoming.event, incoming.ref {
     event, Some(reply_ref)
       if event == codec.reply_event && reply_ref == join_ref

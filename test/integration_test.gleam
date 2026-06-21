@@ -3,10 +3,10 @@
 //// phx_join -> phx_reply handshake plus a server-initiated push, plus a
 //// client push -> server reply round-trip and a join rejection.
 
-import aquamarine
 import aquamarine/channel
 import aquamarine/error
 import aquamarine/phoenix
+import aquamarine/transport
 import beryl
 import beryl/channel as bchannel
 import beryl/transport/mist as mist_transport
@@ -31,13 +31,16 @@ pub fn integration_tests_test() {
 
   // joins a channel and receives a server push
   let assert Ok(ch) =
-    channel.connect(
-      host: "127.0.0.1",
-      port: test_port,
-      path: test_path,
-      topic: "test:lobby",
-      payload: json.object([#("hello", json.bool(True))]),
-      codec: phoenix.codec(),
+    channel.connect_with(
+      transport.gluegun_connector(
+        host: "127.0.0.1",
+        port: test_port,
+        path: test_path,
+      ),
+      "test:lobby",
+      json.object([#("hello", json.bool(True))]),
+      phoenix.codec(),
+      30_000,
     )
 
   // Give the server a moment to register the socket as a subscriber.
@@ -59,33 +62,39 @@ pub fn integration_tests_test() {
 
   // round-trips a client push through the public facade
   let assert Ok(ch) =
-    aquamarine.connect(
-      host: "127.0.0.1",
-      port: test_port,
-      path: test_path,
-      topic: "test:echo",
-      payload: json.object([]),
-      codec: phoenix.codec(),
+    channel.connect_with(
+      transport.gluegun_connector(
+        host: "127.0.0.1",
+        port: test_port,
+        path: test_path,
+      ),
+      "test:echo",
+      json.object([]),
+      phoenix.codec(),
+      30_000,
     )
 
   let assert Ok(Nil) =
-    aquamarine.push(ch, "say", json.object([#("body", json.string("hello"))]))
+    channel.push(ch, "say", json.object([#("body", json.string("hello"))]))
 
-  let assert Ok(incoming) = aquamarine.receive(ch)
+  let assert Ok(incoming) = channel.receive(ch)
   incoming.event |> should.equal(phoenix.codec().reply_event)
   incoming.topic |> should.equal("test:echo")
   decode_body(incoming.payload) |> should.equal(Ok("hello"))
 
-  let assert Ok(Nil) = aquamarine.close(ch)
+  let assert Ok(Nil) = channel.close(ch)
 
   // surfaces a server-side join rejection
-  channel.connect(
-    host: "127.0.0.1",
-    port: test_port,
-    path: test_path,
-    topic: "test:rejected",
-    payload: json.object([]),
-    codec: phoenix.codec(),
+  channel.connect_with(
+    transport.gluegun_connector(
+      host: "127.0.0.1",
+      port: test_port,
+      path: test_path,
+    ),
+    "test:rejected",
+    json.object([]),
+    phoenix.codec(),
+    30_000,
   )
   |> should.equal(Error(error.JoinRejected("error")))
 }
