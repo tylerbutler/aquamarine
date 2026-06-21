@@ -5,8 +5,8 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{Some}
-import phoenix_channel_fixtures/frame as fixtures
 import gleeunit/should
+import phoenix_channel_fixtures/frame as fixtures
 
 pub fn codec_tests_test() {
   // encodes all shared client outbound fixtures

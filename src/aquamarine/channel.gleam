@@ -50,7 +50,7 @@ pub fn connect(
   codec codec: Codec,
 ) -> Result(Channel, AquamarineError) {
   connect_with(
-    transport.stratus_connector(host:, port:, path:),
+    transport.gluegun_connector(host:, port:, path:),
     topic,
     payload,
     codec,

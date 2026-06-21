@@ -149,7 +149,10 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
           actor.continue(State(..state, inbound: rest))
         }
         [] -> {
-          process.send(reply_to, Error(error.Transport(error.SocketReceiveFailed("timeout"))))
+          process.send(
+            reply_to,
+            Error(error.Transport(error.SocketReceiveFailed("timeout"))),
+          )
           actor.continue(state)
         }
       }

@@ -14,8 +14,8 @@ import gleam/erlang/process
 import gleam/json
 import gleam/option.{None, Some}
 import gleam/result
-import roost/frame as roost_frame
 import gleeunit/should
+import roost/frame as roost_frame
 import support/fake_transport as fake
 
 // 24 hours — long enough that no test in this file ever sees a heartbeat tick.
@@ -225,7 +225,9 @@ pub fn channel_tests_test() {
 
   // propagates a connector failure verbatim
   let connector =
-    fake.failing_connector(error.Transport(error.SocketConnectionFailed("nope")))
+    fake.failing_connector(
+      error.Transport(error.SocketConnectionFailed("nope")),
+    )
   channel.connect_with(
     connector,
     test_topic,
@@ -233,9 +235,7 @@ pub fn channel_tests_test() {
     phoenix.codec(),
     no_heartbeat,
   )
-  |> should.equal(
-    Error(error.Transport(error.SocketConnectionFailed("nope"))),
-  )
+  |> should.equal(Error(error.Transport(error.SocketConnectionFailed("nope"))))
 
   // channel.push: encodes the topic, event, payload, and a fresh ref
   let f = fake.start()

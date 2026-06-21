@@ -18,8 +18,8 @@ import gleam/http/response
 import gleam/json
 import gleam/option.{Some}
 import gleam/result
-import mist
 import gleeunit/should
+import mist
 
 const test_port: Int = 47_891
 
@@ -69,11 +69,7 @@ pub fn integration_tests_test() {
     )
 
   let assert Ok(Nil) =
-    aquamarine.push(
-      ch,
-      "say",
-      json.object([#("body", json.string("hello"))]),
-    )
+    aquamarine.push(ch, "say", json.object([#("body", json.string("hello"))]))
 
   let assert Ok(incoming) = aquamarine.receive(ch)
   incoming.event |> should.equal(phoenix.codec().reply_event)

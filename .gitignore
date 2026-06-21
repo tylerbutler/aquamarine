@@ -2,4 +2,5 @@
 *.ez
 /build
 /.worktrees
+/.superpowers
 erl_crash.dump
