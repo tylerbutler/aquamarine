@@ -461,7 +461,7 @@ fn handle_text(
       case state.join_state {
         Joining(reply_to, join_ref) ->
           handle_join_reply(state, reply_to, join_ref, incoming)
-        Joined(_) -> handle_joined_incoming(state, incoming)
+        Joined(_) -> dispatch_incoming(state, incoming)
         NotJoined | Closing -> stratus.continue(state)
       }
     Error(decode_error) ->
@@ -546,7 +546,7 @@ fn complete_join(
   }
 }
 
-fn handle_joined_incoming(
+fn dispatch_incoming(
   state: RuntimeState(state),
   incoming: Incoming,
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
@@ -557,8 +557,11 @@ fn handle_joined_incoming(
     -> stratus.continue(state)
     event
       if event == state.config.codec.close_event
-      || event == state.config.codec.error_event
     -> {
+      let next = state.handlers.on_closed(state.user_state)
+      apply_next(RuntimeState(..state, join_state: Closing), next)
+    }
+    event if event == state.config.codec.error_event -> {
       let next = state.handlers.on_error(state.user_state, error.ChannelClosed)
       apply_next(RuntimeState(..state, join_state: Closing), next)
     }
@@ -589,9 +592,11 @@ fn handle_transport_closed(
 ) {
   case state.join_state {
     Joining(reply_to, _) -> process.send(reply_to, Error(error.ChannelClosed))
-    _ -> Nil
+    Closing -> Nil
+    _ -> {
+      let _ = state.handlers.on_closed(state.user_state)
+    }
   }
-  let _ = state.handlers.on_closed(state.user_state)
   ref.stop(state.counter)
   Nil
 }

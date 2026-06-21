@@ -44,6 +44,17 @@ type CallbackState {
   CallbackState(events: process.Subject(TestEvent))
 }
 
+type RuntimeEvent {
+  Joined
+  Message(Bool, String)
+  ErrorSeen(error.AquamarineError)
+  Closed
+}
+
+type RuntimeState {
+  RuntimeState(events: process.Subject(RuntimeEvent), joined: Bool)
+}
+
 // -- Helpers ----------------------------------------------------------------
 
 fn empty_payload() -> json.Json {
@@ -97,6 +108,48 @@ fn connect_with_fake(fake_socket: fake.FakeSocket) {
       no_heartbeat,
     )
   ch
+}
+
+fn runtime_handlers(events: process.Subject(RuntimeEvent)) -> channel.Handlers(RuntimeState) {
+  channel.handlers(
+    on_joined: fn(state: RuntimeState, _payload) {
+      process.send(state.events, Joined)
+      channel.continue(RuntimeState(..state, joined: True))
+    },
+    on_message: fn(state: RuntimeState, incoming: Incoming) {
+      process.send(state.events, Message(state.joined, incoming.event))
+      channel.continue(state)
+    },
+    on_error: fn(state: RuntimeState, err) {
+      process.send(state.events, ErrorSeen(err))
+      channel.continue(state)
+    },
+    on_closed: fn(state: RuntimeState) {
+      process.send(state.events, Closed)
+      channel.continue(state)
+    },
+  )
+}
+
+fn decode_fails_on_boom_codec() -> codec.Codec {
+  let phoenix_codec = phoenix.codec()
+  codec.Codec(
+    decode: fn(text) {
+      case phoenix_codec.decode(text) {
+        Ok(incoming) if incoming.event == "boom" ->
+          Error(codec.InvalidFormat("boom"))
+        other -> other
+      }
+    },
+    encode_join: phoenix_codec.encode_join,
+    encode_push: phoenix_codec.encode_push,
+    encode_heartbeat: phoenix_codec.encode_heartbeat,
+    join_event: phoenix_codec.join_event,
+    reply_event: phoenix_codec.reply_event,
+    close_event: phoenix_codec.close_event,
+    error_event: phoenix_codec.error_event,
+    heartbeat_topic: phoenix_codec.heartbeat_topic,
+  )
 }
 
 // -- Tests ------------------------------------------------------------------
@@ -581,6 +634,338 @@ pub fn channel_tests_test() {
   // fake socket is shut down.
   process.sleep(5)
   fake.shutdown(f)
+
+  let events = process.new_subject()
+  let server = channel_server.start(47_899)
+  channel_server.register_ok(server, test_topic, empty_payload())
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: 47_899,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      runtime_handlers(events),
+      RuntimeState(events, False),
+    )
+
+  let assert Ok(Joined) = process.receive(events, 1000)
+
+  channel_server.broadcast(
+    server,
+    test_topic,
+    "tick",
+    json.object([#("n", json.int(7))]),
+  )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Message(True, "tick")))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+
+  let events = process.new_subject()
+  let server = channel_server.start(47_900)
+  channel_server.register_ok(server, test_topic, empty_payload())
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: 47_900,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      runtime_handlers(events),
+      RuntimeState(events, False),
+    )
+
+  let assert Ok(Joined) = process.receive(events, 1000)
+
+  channel_server.broadcast(
+    server,
+    test_topic,
+    phoenix.codec().close_event,
+    empty_payload(),
+  )
+
+  process.receive(events, 1000) |> should.equal(Ok(Closed))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+
+  let events = process.new_subject()
+  let server = channel_server.start(47_901)
+  channel_server.register_ok(server, test_topic, empty_payload())
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: 47_901,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      runtime_handlers(events),
+      RuntimeState(events, False),
+    )
+
+  let assert Ok(Joined) = process.receive(events, 1000)
+
+  channel_server.broadcast(
+    server,
+    test_topic,
+    phoenix.codec().error_event,
+    empty_payload(),
+  )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(ErrorSeen(error.ChannelClosed)))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+
+  let events = process.new_subject()
+  let server = channel_server.start(47_902)
+  channel_server.register_ok(server, test_topic, empty_payload())
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: 47_902,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: decode_fails_on_boom_codec(),
+      ),
+      runtime_handlers(events),
+      RuntimeState(events, False),
+    )
+
+  let assert Ok(Joined) = process.receive(events, 1000)
+
+  channel_server.broadcast(server, test_topic, "boom", empty_payload())
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(ErrorSeen(error.DecodeFailed(codec.InvalidFormat("boom")))))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+
+  let events = process.new_subject()
+  let server = channel_server.start(47_903)
+  let heartbeat_topic = phoenix.codec().heartbeat_topic
+  channel_server.register_ok(server, heartbeat_topic, empty_payload())
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: 47_903,
+        path: "/socket/websocket",
+        topic: heartbeat_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      runtime_handlers(events),
+      RuntimeState(events, False),
+    )
+
+  let assert Ok(Joined) = process.receive(events, 1000)
+
+  channel_server.broadcast(
+    server,
+    heartbeat_topic,
+    phoenix.codec().reply_event,
+    empty_payload(),
+  )
+  channel_server.broadcast(server, heartbeat_topic, "after_hb", empty_payload())
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Message(True, "after_hb")))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+fn runtime_application_messages_use_updated_join_state() {
+  let events = process.new_subject()
+  let server = channel_server.start(47_899)
+  channel_server.register_ok(server, test_topic, empty_payload())
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: 47_899,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      runtime_handlers(events),
+      RuntimeState(events, False),
+    )
+
+  let assert Ok(Joined) = process.receive(events, 1000)
+
+  channel_server.broadcast(
+    server,
+    test_topic,
+    "tick",
+    json.object([#("n", json.int(7))]),
+  )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Message(True, "tick")))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+fn runtime_close_event_calls_on_closed() {
+  let events = process.new_subject()
+  let server = channel_server.start(47_900)
+  channel_server.register_ok(server, test_topic, empty_payload())
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: 47_900,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      runtime_handlers(events),
+      RuntimeState(events, False),
+    )
+
+  let assert Ok(Joined) = process.receive(events, 1000)
+
+  channel_server.broadcast(
+    server,
+    test_topic,
+    phoenix.codec().close_event,
+    empty_payload(),
+  )
+
+  process.receive(events, 1000) |> should.equal(Ok(Closed))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+fn runtime_error_event_calls_on_error() {
+  let events = process.new_subject()
+  let server = channel_server.start(47_901)
+  channel_server.register_ok(server, test_topic, empty_payload())
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: 47_901,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      runtime_handlers(events),
+      RuntimeState(events, False),
+    )
+
+  let assert Ok(Joined) = process.receive(events, 1000)
+
+  channel_server.broadcast(
+    server,
+    test_topic,
+    phoenix.codec().error_event,
+    empty_payload(),
+  )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(ErrorSeen(error.ChannelClosed)))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+fn runtime_decode_failures_call_on_error() {
+  let events = process.new_subject()
+  let server = channel_server.start(47_902)
+  channel_server.register_ok(server, test_topic, empty_payload())
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: 47_902,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: decode_fails_on_boom_codec(),
+      ),
+      runtime_handlers(events),
+      RuntimeState(events, False),
+    )
+
+  let assert Ok(Joined) = process.receive(events, 1000)
+
+  channel_server.broadcast(server, test_topic, "boom", empty_payload())
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(ErrorSeen(error.DecodeFailed(codec.InvalidFormat("boom")))))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+fn runtime_heartbeat_replies_are_swallowed() {
+  let events = process.new_subject()
+  let server = channel_server.start(47_903)
+  let heartbeat_topic = phoenix.codec().heartbeat_topic
+  channel_server.register_ok(server, heartbeat_topic, empty_payload())
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: 47_903,
+        path: "/socket/websocket",
+        topic: heartbeat_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      runtime_handlers(events),
+      RuntimeState(events, False),
+    )
+
+  let assert Ok(Joined) = process.receive(events, 1000)
+
+  channel_server.broadcast(
+    server,
+    heartbeat_topic,
+    phoenix.codec().reply_event,
+    empty_payload(),
+  )
+  channel_server.broadcast(server, heartbeat_topic, "after_hb", empty_payload())
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Message(True, "after_hb")))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
 }
 
 fn decode_n(payload) -> Result(Int, Nil) {
