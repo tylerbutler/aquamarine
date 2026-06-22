@@ -35,6 +35,8 @@ const callback_receive_test_port: Int = 47_898
 
 const callback_push_test_port: Int = 47_904
 
+const close_push_test_port: Int = 47_906
+
 type TestEvent {
   Joined(String)
   Message(Incoming)
@@ -925,6 +927,41 @@ pub fn runtime_heartbeat_schedules_after_join_test() {
   incoming.ref |> should.equal(Some("2"))
 
   let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+pub fn close_stops_actor_and_later_push_does_not_hang_test() {
+  let events = process.new_subject()
+  let server = channel_server.start(close_push_test_port)
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: close_push_test_port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      callback_handlers(),
+      CallbackState(events),
+    )
+
+  let assert Ok(Joined("ok")) = process.receive(events, 1000)
+  let assert Ok(Nil) = channel.close(ch)
+
+  case channel.push(ch, "after_close", empty_payload()) {
+    Error(error.ChannelClosed) -> Nil
+    Error(error.ReplyTimeout) -> Nil
+    other -> other |> should.equal(Error(error.ChannelClosed))
+  }
+
   channel_server.stop(server)
 }
 
