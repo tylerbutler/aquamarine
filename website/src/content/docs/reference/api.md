@@ -53,7 +53,9 @@ pub fn connect(
 ```
 
 Open a WebSocket, join `topic` with `payload`, wait for the join reply,
-schedule the heartbeat, run `on_joined`, and return a command-ready channel.
+schedule the heartbeat, run `on_joined`, and return the channel once the actor
+can accept commands. A peer can still close concurrently, so the first `push`
+or `close` may return `ChannelClosed`.
 
 ## `push`
 

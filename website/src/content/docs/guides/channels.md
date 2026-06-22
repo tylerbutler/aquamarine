@@ -69,7 +69,9 @@ before `connect` returns the error — you never get a usable half-open channel
 back. The protocol join wait is timed; `on_joined` itself is user code, so a
 slow callback delays `connect` instead of turning a successful join into
 `ReplyTimeout`. If `on_joined` returns `stop()`, `connect` returns
-`ChannelClosed`.
+`ChannelClosed`. A peer can still close concurrently while `on_joined` runs, so
+a successful `connect` does not guarantee that the first later `push` or
+`close` will succeed.
 
 ## What callbacks see
 
