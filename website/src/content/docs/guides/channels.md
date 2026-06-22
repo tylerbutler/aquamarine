@@ -60,10 +60,14 @@ happened, in order:
 3. The join frame is sent.
 4. A `phx_reply` matching the join ref arrives with `status: "ok"`.
 5. The channel actor schedules the first heartbeat tick.
+6. Your `on_joined` callback yields with `continue`.
 
 If any step fails, Aquamarine starts cleanup for every resource opened so far
 before `connect` returns the error — you never get a usable half-open channel
-back.
+back. The protocol join wait is timed; `on_joined` itself is user code, so a
+slow callback delays `connect` instead of turning a successful join into
+`ReplyTimeout`. If `on_joined` returns `stop()`, `connect` returns
+`ChannelClosed`.
 
 ## What callbacks see
 

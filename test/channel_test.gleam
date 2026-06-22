@@ -180,7 +180,7 @@ pub fn connect_surfaces_join_rejection_test() {
   channel_server.stop(server)
 }
 
-pub fn connect_returns_channel_before_stopping_on_joined_test() {
+pub fn connect_returns_channel_closed_when_on_joined_stops_test() {
   let events = process.new_subject()
   let server = channel_server.start()
   let port = channel_server.port(server)
@@ -190,25 +190,22 @@ pub fn connect_returns_channel_before_stopping_on_joined_test() {
     json.object([#("welcome", json.string("stop"))]),
   )
 
-  let assert Ok(ch) =
-    channel.connect(
-      channel.config(
-        host: "127.0.0.1",
-        port: port,
-        path: "/socket/websocket",
-        topic: test_topic,
-        payload: json.object([]),
-        codec: phoenix.codec(),
-      ),
-      stopping_handlers(),
-      CallbackState(events),
-    )
+  channel.connect(
+    channel.config(
+      host: "127.0.0.1",
+      port: port,
+      path: "/socket/websocket",
+      topic: test_topic,
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    ),
+    stopping_handlers(),
+    CallbackState(events),
+  )
+  |> should.equal(Error(error.ChannelClosed))
 
   process.receive(events, 1000)
   |> should.equal(Ok(Joined("stop")))
-
-  channel.close(ch)
-  |> should.equal(Error(error.ChannelClosed))
 
   channel_server.stop(server)
 }

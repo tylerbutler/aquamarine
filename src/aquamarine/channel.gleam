@@ -158,6 +158,7 @@ type JoinState {
   NotJoined
   Joining(
     reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+    ready_to: process.Subject(Result(Nil, error.AquamarineError)),
     join_ref: String,
   )
   Joined(join_ref: String)
@@ -208,7 +209,10 @@ type MonitorState(state) {
 }
 
 type Command(state) {
-  StartJoin(reply_to: process.Subject(Result(Nil, error.AquamarineError)))
+  StartJoin(
+    reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+    ready_to: process.Subject(Result(Nil, error.AquamarineError)),
+  )
   Push(
     event: String,
     payload: json.Json,
@@ -324,7 +328,7 @@ fn do_connect(
         }),
       )
 
-      case call_runtime(started.pid, started.data, StartJoin) {
+      case call_start_join(started.pid, started.data) {
         Ok(Nil) -> Ok(CallbackChannel(pid: started.pid, subject: started.data))
         Error(err) -> {
           let _ = request_close(started.data)
@@ -425,6 +429,52 @@ fn push_callback_channel(
   call_runtime(pid, subject, fn(reply_to) { Push(event:, payload:, reply_to:) })
 }
 
+fn call_start_join(
+  pid: process.Pid,
+  subject: process.Subject(stratus.InternalMessage(Command(state))),
+) -> Result(Nil, error.AquamarineError) {
+  let monitor = process.monitor(pid)
+  use <- bool.guard(when: !process.is_alive(pid), return: {
+    process.demonitor_process(monitor:)
+    Error(error.ChannelClosed)
+  })
+
+  let reply_to = process.new_subject()
+  let ready_to = process.new_subject()
+  StartJoin(reply_to:, ready_to:)
+  |> stratus.to_user_message
+  |> process.send(subject, _)
+
+  let join_selector =
+    process.new_selector()
+    |> process.select(reply_to)
+    |> process.select_specific_monitor(monitor, fn(_) {
+      Error(error.ChannelClosed)
+    })
+
+  case process.selector_receive(join_selector, join_timeout_ms) {
+    Error(_) -> {
+      process.demonitor_process(monitor:)
+      Error(error.ReplyTimeout)
+    }
+    Ok(Error(err)) -> {
+      process.demonitor_process(monitor:)
+      Error(err)
+    }
+    Ok(Ok(Nil)) -> {
+      let ready_selector =
+        process.new_selector()
+        |> process.select(ready_to)
+        |> process.select_specific_monitor(monitor, fn(_) {
+          Error(error.ChannelClosed)
+        })
+      let result = process.selector_receive_forever(ready_selector)
+      process.demonitor_process(monitor:)
+      result
+    }
+  }
+}
+
 fn call_runtime(
   pid: process.Pid,
   subject: process.Subject(stratus.InternalMessage(Command(state))),
@@ -467,7 +517,8 @@ fn loop(
   conn: stratus.Connection,
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
   case msg {
-    stratus.User(StartJoin(reply_to)) -> start_join(state, conn, reply_to)
+    stratus.User(StartJoin(reply_to:, ready_to:)) ->
+      start_join(state, conn, reply_to, ready_to)
     stratus.User(SetSelfSubject(subject:, monitor:, reply_to:)) -> {
       let state =
         RuntimeState(
@@ -501,6 +552,7 @@ fn start_join(
   state: RuntimeState(state),
   conn: stratus.Connection,
   reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+  ready_to: process.Subject(Result(Nil, error.AquamarineError)),
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
   case ref.next(state.counter) {
     Ok(join_ref) -> {
@@ -513,7 +565,10 @@ fn start_join(
       case stratus.send_text_message(conn, frame) {
         Ok(Nil) ->
           stratus.continue(
-            RuntimeState(..state, join_state: Joining(reply_to, join_ref)),
+            RuntimeState(
+              ..state,
+              join_state: Joining(reply_to, ready_to, join_ref),
+            ),
           )
         Error(reason) -> {
           let err =
@@ -548,14 +603,14 @@ fn handle_text(
   case state.config.codec.decode(text) {
     Ok(incoming) ->
       case state.join_state {
-        Joining(reply_to, join_ref) ->
-          handle_join_reply(state, reply_to, join_ref, incoming)
+        Joining(reply_to, ready_to, join_ref) ->
+          handle_join_reply(state, reply_to, ready_to, join_ref, incoming)
         Joined(_) -> dispatch_incoming(state, incoming)
         NotJoined | Closing -> stratus.continue(state)
       }
     Error(decode_error) ->
       case state.join_state {
-        Joining(reply_to, _) -> {
+        Joining(reply_to, _, _) -> {
           let err = error.DecodeFailed(decode_error)
           fail_join(state, reply_to, err)
         }
@@ -574,13 +629,14 @@ fn handle_text(
 fn handle_join_reply(
   state: RuntimeState(state),
   reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+  ready_to: process.Subject(Result(Nil, error.AquamarineError)),
   join_ref: String,
   incoming: Incoming,
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
   case incoming.event, incoming.ref {
     event, Some(reply_ref)
       if event == state.config.codec.reply_event && reply_ref == join_ref
-    -> complete_join(state, reply_to, join_ref, incoming)
+    -> complete_join(state, reply_to, ready_to, join_ref, incoming)
     _, _ -> stratus.continue(state)
   }
 }
@@ -588,6 +644,7 @@ fn handle_join_reply(
 fn complete_join(
   state: RuntimeState(state),
   reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+  ready_to: process.Subject(Result(Nil, error.AquamarineError)),
   join_ref: String,
   incoming: Incoming,
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
@@ -608,14 +665,17 @@ fn complete_join(
             }
             None -> Nil
           }
-          notify_startup_complete(joined_state)
           process.send(reply_to, Ok(Nil))
           let next = state.handlers.on_joined(state.user_state, reply)
           case next {
             Continue(user_state) -> {
-              stratus.continue(set_user_state(joined_state, user_state))
+              let joined_state = set_user_state(joined_state, user_state)
+              notify_startup_complete(joined_state)
+              process.send(ready_to, Ok(Nil))
+              stratus.continue(joined_state)
             }
             Stop -> {
+              process.send(ready_to, Error(error.ChannelClosed))
               ref.stop(state.counter)
               stratus.stop()
             }
@@ -829,7 +889,8 @@ fn handle_transport_closed(
   _reason: stratus.CloseReason,
 ) {
   case state.join_state {
-    Joining(reply_to, _) -> process.send(reply_to, Error(error.ChannelClosed))
+    Joining(reply_to, _, _) ->
+      process.send(reply_to, Error(error.ChannelClosed))
     Closing -> Nil
     _ -> notify_terminal_closed(state)
   }

@@ -53,7 +53,7 @@ pub fn connect(
 ```
 
 Open a WebSocket, join `topic` with `payload`, wait for the join reply,
-schedule the heartbeat, and hand control to the callbacks.
+schedule the heartbeat, run `on_joined`, and return a command-ready channel.
 
 ## `push`
 
