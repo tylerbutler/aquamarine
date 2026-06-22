@@ -84,8 +84,10 @@ separate loop.
 
 - `on_joined` runs after the join reply arrives.
 - `on_message` runs for application messages.
-- `on_error` runs when the runtime sees a transport or decode failure.
-- `on_closed` runs when the channel closes.
+- `on_error` runs when the runtime sees a transport or decode failure, or a
+  protocol error event.
+- `on_closed` runs when the peer or protocol closes the channel. It does not
+  run for your own `close(channel)` call.
 
 Return `aquamarine.continue(state)` to keep the actor running, or
 `aquamarine.stop()` to end it.

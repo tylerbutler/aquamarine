@@ -150,6 +150,7 @@ const join_timeout_ms: Int = 5000
 
 pub opaque type Channel(state) {
   CallbackChannel(
+    pid: process.Pid,
     subject: process.Subject(stratus.InternalMessage(Command(state))),
   )
 }
@@ -170,11 +171,29 @@ type RuntimeState(state) {
     handlers: Handlers(state),
     user_state: state,
     counter: ref.Counter,
+    monitor: option.Option(process.Subject(MonitorMessage(state))),
     self_subject: option.Option(
       process.Subject(stratus.InternalMessage(Command(state))),
     ),
     join_state: JoinState,
     heartbeat_ms: Int,
+  )
+}
+
+type MonitorMessage(state) {
+  UserStateChanged(state)
+}
+
+type MonitorEvent(state) {
+  MonitorCommand(MonitorMessage(state))
+  RuntimeDown(process.Down)
+}
+
+type MonitorState(state) {
+  MonitorState(
+    handlers: Handlers(state),
+    user_state: state,
+    counter: ref.Counter,
   )
 }
 
@@ -187,6 +206,7 @@ type Command(state) {
   )
   SetSelfSubject(
     subject: process.Subject(stratus.InternalMessage(Command(state))),
+    monitor: process.Subject(MonitorMessage(state)),
     reply_to: process.Subject(Result(Nil, error.AquamarineError)),
   )
   Heartbeat
@@ -256,6 +276,7 @@ fn do_connect(
           handlers: handlers,
           user_state: initial_state,
           counter: counter,
+          monitor: None,
           self_subject: None,
           join_state: NotJoined,
           heartbeat_ms: heartbeat_ms,
@@ -268,8 +289,19 @@ fn do_connect(
 
   case stratus.start(builder) {
     Ok(started) -> {
+      process.unlink(started.pid)
+      use monitor <- result.try(start_runtime_monitor(
+        started.pid,
+        handlers,
+        initial_state,
+        counter,
+      ))
       let self_reply = process.new_subject()
-      SetSelfSubject(subject: started.data, reply_to: self_reply)
+      SetSelfSubject(
+        subject: started.data,
+        monitor: monitor,
+        reply_to: self_reply,
+      )
       |> stratus.to_user_message
       |> process.send(started.data, _)
 
@@ -287,7 +319,8 @@ fn do_connect(
       |> process.send(started.data, _)
 
       case process.receive(reply_to, join_timeout_ms) {
-        Ok(Ok(Nil)) -> Ok(CallbackChannel(subject: started.data))
+        Ok(Ok(Nil)) ->
+          Ok(CallbackChannel(pid: started.pid, subject: started.data))
         Ok(Error(err)) -> {
           let _ = request_close(started.data)
           Error(err)
@@ -312,7 +345,11 @@ pub fn push(
   payload: json.Json,
 ) -> Result(Nil, error.AquamarineError) {
   case channel {
-    CallbackChannel(subject) -> push_callback_channel(subject, event, payload)
+    CallbackChannel(pid, subject) ->
+      case process.is_alive(pid) {
+        True -> push_callback_channel(subject, event, payload)
+        False -> Error(error.ChannelClosed)
+      }
   }
 }
 
@@ -320,7 +357,11 @@ pub fn push(
 /// Stratus actor to close itself.
 pub fn close(channel: Channel(state)) -> Result(Nil, error.AquamarineError) {
   case channel {
-    CallbackChannel(subject) -> close_callback_channel(subject)
+    CallbackChannel(pid, subject) ->
+      case process.is_alive(pid) {
+        True -> close_callback_channel(subject)
+        False -> Error(error.ChannelClosed)
+      }
   }
 }
 
@@ -402,8 +443,13 @@ fn loop(
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
   case msg {
     stratus.User(StartJoin(reply_to)) -> start_join(state, conn, reply_to)
-    stratus.User(SetSelfSubject(subject:, reply_to:)) -> {
-      let state = RuntimeState(..state, self_subject: Some(subject))
+    stratus.User(SetSelfSubject(subject:, monitor:, reply_to:)) -> {
+      let state =
+        RuntimeState(
+          ..state,
+          monitor: Some(monitor),
+          self_subject: Some(subject),
+        )
       process.send(reply_to, Ok(Nil))
       stratus.continue(state)
     }
@@ -414,14 +460,14 @@ fn loop(
     stratus.User(Heartbeat) -> handle_heartbeat(state, conn)
     stratus.User(Close(reply_to)) -> {
       let closing_state = RuntimeState(..state, join_state: Closing)
-      ref.stop(closing_state.counter)
       let result =
         stratus.close(conn, because: stratus.Normal(<<>>))
         |> result.map_error(fn(reason) {
           error.Transport(error.SocketSendFailed(string.inspect(reason)))
         })
       process.send(reply_to, result)
-      stratus.continue(closing_state)
+      ref.stop(closing_state.counter)
+      stratus.stop()
     }
   }
 }
@@ -523,11 +569,8 @@ fn complete_join(
           case next {
             Continue(user_state) -> {
               let joined_state =
-                RuntimeState(
-                  ..state,
-                  user_state: user_state,
-                  join_state: Joined(join_ref),
-                )
+                RuntimeState(..state, join_state: Joined(join_ref))
+                |> set_user_state(user_state)
               case state.self_subject {
                 Some(subject) -> {
                   let _ =
@@ -579,12 +622,16 @@ fn dispatch_incoming(
       && incoming.topic == state.config.codec.heartbeat_topic
     -> stratus.continue(state)
     event if event == state.config.codec.close_event -> {
-      let next = state.handlers.on_closed(state.user_state)
-      apply_next(RuntimeState(..state, join_state: Closing), next)
+      let closing_state = RuntimeState(..state, join_state: Closing)
+      let _ = state.handlers.on_closed(state.user_state)
+      ref.stop(closing_state.counter)
+      stratus.stop()
     }
     event if event == state.config.codec.error_event -> {
-      let next = state.handlers.on_error(state.user_state, error.ChannelClosed)
-      apply_next(RuntimeState(..state, join_state: Closing), next)
+      let closing_state = RuntimeState(..state, join_state: Closing)
+      let _ = state.handlers.on_error(state.user_state, error.ChannelClosed)
+      ref.stop(closing_state.counter)
+      stratus.stop()
     }
     _ -> {
       let next = state.handlers.on_message(state.user_state, incoming)
@@ -598,11 +645,95 @@ fn apply_next(
   next: Next(state),
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
   case next {
-    Continue(user_state) ->
-      stratus.continue(RuntimeState(..state, user_state: user_state))
+    Continue(user_state) -> stratus.continue(set_user_state(state, user_state))
     Stop -> {
       ref.stop(state.counter)
       stratus.stop()
+    }
+  }
+}
+
+fn set_user_state(
+  state: RuntimeState(state),
+  user_state: state,
+) -> RuntimeState(state) {
+  case state.monitor {
+    Some(monitor) -> process.send(monitor, UserStateChanged(user_state))
+    None -> Nil
+  }
+  RuntimeState(..state, user_state: user_state)
+}
+
+fn start_runtime_monitor(
+  pid: process.Pid,
+  handlers: Handlers(state),
+  initial_state: state,
+  counter: ref.Counter,
+) -> Result(process.Subject(MonitorMessage(state)), error.AquamarineError) {
+  let ready = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let subject = process.new_subject()
+    process.send(ready, subject)
+
+    let monitor = process.monitor(pid)
+    let selector =
+      process.new_selector()
+      |> process.select_map(subject, MonitorCommand)
+      |> process.select_specific_monitor(monitor, RuntimeDown)
+
+    monitor_loop(
+      MonitorState(handlers:, user_state: initial_state, counter:),
+      selector,
+    )
+  })
+
+  case process.receive(ready, 1000) {
+    Ok(subject) -> Ok(subject)
+    Error(_) ->
+      Error(error.InternalError("failed to start runtime monitor actor"))
+  }
+}
+
+fn monitor_loop(
+  state: MonitorState(state),
+  selector: process.Selector(MonitorEvent(state)),
+) -> Nil {
+  case process.selector_receive_forever(selector) {
+    MonitorCommand(UserStateChanged(user_state)) ->
+      monitor_loop(MonitorState(..state, user_state: user_state), selector)
+    RuntimeDown(down) -> handle_runtime_down(state, down)
+  }
+}
+
+fn handle_runtime_down(state: MonitorState(state), down: process.Down) -> Nil {
+  ref.stop(state.counter)
+  case down {
+    process.ProcessDown(reason:, ..) -> handle_runtime_exit(state, reason)
+    process.PortDown(reason:, ..) -> handle_runtime_exit(state, reason)
+  }
+}
+
+fn handle_runtime_exit(
+  state: MonitorState(state),
+  reason: process.ExitReason,
+) -> Nil {
+  case reason {
+    process.Normal -> Nil
+    process.Killed -> {
+      let _ =
+        state.handlers.on_error(
+          state.user_state,
+          error.Transport(error.UnexpectedTransportFailure("killed")),
+        )
+      Nil
+    }
+    process.Abnormal(reason) -> {
+      let _ =
+        state.handlers.on_error(
+          state.user_state,
+          error.Transport(error.SocketReceiveFailed(string.inspect(reason))),
+        )
+      Nil
     }
   }
 }

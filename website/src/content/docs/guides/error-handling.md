@@ -24,8 +24,9 @@ pub type AquamarineError {
 ### `Transport(TransportError)`
 
 Wraps a failure from the underlying Stratus-backed WebSocket transport.
-Returned by `connect`, `push`, and `close` whenever the socket itself
-misbehaves. The inner `TransportError` classifies the failure further:
+Returned by `connect`, `push`, and `close`, or passed to `on_error`, whenever
+the socket itself misbehaves. The inner `TransportError` classifies the failure
+further:
 
 | Variant | Meaning |
 | --- | --- |
@@ -44,8 +45,9 @@ or `"malformed reply"` if the payload could not be decoded.
 
 ### `ChannelClosed`
 
-The channel is no longer usable. Returned when the runtime sees a close
-event or the underlying socket closes.
+The channel is no longer usable. Returned after the runtime sees a terminal
+protocol event, or when you call `push` or `close` with a channel handle whose
+actor has already stopped.
 
 ### `DecodeFailed(codec.DecodeError)`
 

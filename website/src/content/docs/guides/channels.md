@@ -23,8 +23,10 @@ state inside the channel actor and calls your callbacks as frames arrive.
 
 - `on_joined` runs once the join reply arrives.
 - `on_message` runs for application messages.
-- `on_error` runs when the runtime sees a transport or decode failure.
-- `on_closed` runs when the channel closes.
+- `on_error` runs when the runtime sees a transport or decode failure, or a
+  protocol error event.
+- `on_closed` runs when the peer or protocol closes the channel. It does not
+  run for your own `close(channel)` call.
 
 Each callback returns `aquamarine.continue(state)` to keep the actor
 running or `aquamarine.stop()` to end it.
@@ -64,7 +66,8 @@ Aquamarine filters transport noise before it reaches your callbacks. It:
 - Skips binary frames.
 - Skips heartbeat replies (the `phx_reply` on the protocol's heartbeat
   topic).
-- Translates protocol close/error events into `on_closed`.
+- Translates protocol close events into `on_closed`.
+- Translates protocol error events into `on_error(ChannelClosed)`.
 - Delivers other inbound frames as `Incoming` records.
 
 ## Refs and replies
@@ -77,11 +80,11 @@ yourself.
 
 ## Closing cleanly
 
-`close` asks the actor to send a normal close and stop. If the actor is
-already gone or does not reply in time, `close` returns
-`ReplyTimeout` or the appropriate error from the underlying transport.
-It still tries to stop the heartbeat and ref actors before touching the
-socket, so a failed close does not leak actors.
+`close` asks the actor to send a normal close and stop. It does not call your
+`on_closed` callback. If the actor is already gone or does not reply in time,
+`close` returns `ChannelClosed`, `ReplyTimeout`, or the appropriate error from
+the underlying transport. It still stops the heartbeat and ref actors, so a
+failed close does not leak actors.
 
 ## Related
 

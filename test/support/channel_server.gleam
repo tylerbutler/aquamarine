@@ -108,3 +108,8 @@ pub fn broadcast(
 pub fn stop(_server: Server) -> Nil {
   Nil
 }
+
+pub fn crash(server: Server) -> Nil {
+  process.unlink(server.pid)
+  process.send_exit(server.pid)
+}

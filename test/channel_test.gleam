@@ -274,7 +274,8 @@ pub fn runtime_close_event_calls_on_closed_test() {
 
   process.receive(events, 1000) |> should.equal(Ok(RuntimeClosed))
 
-  let assert Ok(Nil) = channel.close(ch)
+  process.sleep(20)
+  channel.close(ch) |> should.equal(Error(error.ChannelClosed))
   channel_server.stop(server)
 }
 
@@ -314,8 +315,47 @@ pub fn runtime_error_event_calls_on_error_test() {
   process.receive(events, 1000)
   |> should.equal(Ok(RuntimeErrorSeen(error.ChannelClosed)))
 
-  let assert Ok(Nil) = channel.close(ch)
+  process.sleep(20)
+  channel.close(ch) |> should.equal(Error(error.ChannelClosed))
   channel_server.stop(server)
+}
+
+pub fn runtime_transport_failure_calls_on_error_test() {
+  let events = process.new_subject()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
+
+  let assert Ok(_ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      runtime_handlers(events),
+      RuntimeState(events, False),
+    )
+
+  let assert Ok(RuntimeJoined) = process.receive(events, 1000)
+
+  channel_server.crash(server)
+
+  case process.receive(events, 1000) {
+    Ok(RuntimeErrorSeen(error.Transport(error.SocketReceiveFailed(_)))) -> Nil
+    other ->
+      other
+      |> should.equal(
+        Ok(RuntimeErrorSeen(error.Transport(error.SocketReceiveFailed("")))),
+      )
+  }
 }
 
 pub fn runtime_decode_failures_call_on_error_test() {
