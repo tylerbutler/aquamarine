@@ -225,6 +225,7 @@ type Command(state) {
   )
   Heartbeat
   Close(reply_to: process.Subject(Result(Nil, error.AquamarineError)))
+  Shutdown
 }
 
 pub fn continue(state: state) -> Next(state) {
@@ -408,7 +409,7 @@ fn is_handshake_failure(reason: String) -> Bool {
 fn request_close(
   subject: process.Subject(stratus.InternalMessage(Command(state))),
 ) -> Nil {
-  Close(process.new_subject())
+  Shutdown
   |> stratus.to_user_message
   |> process.send(subject, _)
 }
@@ -542,6 +543,12 @@ fn loop(
           error.Transport(error.SocketSendFailed(string.inspect(reason)))
         })
       process.send(reply_to, result)
+      ref.stop(closing_state.counter)
+      stratus.stop()
+    }
+    stratus.User(Shutdown) -> {
+      let closing_state = RuntimeState(..state, join_state: Closing)
+      let _ = stratus.close(conn, because: stratus.Normal(<<>>))
       ref.stop(closing_state.counter)
       stratus.stop()
     }

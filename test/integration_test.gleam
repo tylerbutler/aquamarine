@@ -13,7 +13,7 @@ import support/channel_server
 
 const test_path: String = "/socket/websocket"
 
-const unused_port: Int = 48_100
+const closed_port: Int = 0
 
 type IntegrationEvent {
   IntegrationJoined(String)
@@ -212,7 +212,7 @@ pub fn integration_startup_transport_errors_test() {
     aquamarine.connect(
       aquamarine.config(
         host: "127.0.0.1",
-        port: unused_port,
+        port: closed_port,
         path: test_path,
         topic: "test:lobby",
         payload: json.object([]),

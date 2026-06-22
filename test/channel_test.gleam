@@ -180,6 +180,35 @@ pub fn connect_surfaces_join_rejection_test() {
   channel_server.stop(server)
 }
 
+pub fn connect_failure_cleanup_does_not_leave_orphan_replies_test() {
+  process.flush_messages()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_rejected(server, test_topic)
+
+  channel.connect(
+    channel.config(
+      host: "127.0.0.1",
+      port: port,
+      path: "/socket/websocket",
+      topic: test_topic,
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    ),
+    callback_handlers(),
+    CallbackState(process.new_subject()),
+  )
+  |> should.equal(Error(error.JoinRejected("error")))
+
+  process.sleep(20)
+  process.new_selector()
+  |> process.select_other(fn(_) { True })
+  |> process.selector_receive(20)
+  |> should.equal(Error(Nil))
+
+  channel_server.stop(server)
+}
+
 pub fn connect_returns_channel_closed_when_on_joined_stops_test() {
   let events = process.new_subject()
   let server = channel_server.start()
