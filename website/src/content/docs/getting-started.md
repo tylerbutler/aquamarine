@@ -80,7 +80,7 @@ The `payload` argument is the join payload — it is what the server's
 ## Handle callbacks
 
 Aquamarine hands inbound events to your callbacks instead of exposing a
-blocking `receive` call.
+separate loop.
 
 - `on_joined` runs after the join reply arrives.
 - `on_message` runs for application messages.

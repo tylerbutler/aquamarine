@@ -34,7 +34,7 @@ running or `aquamarine.stop()` to end it.
 The channel is owned by the Stratus actor that `connect` starts. From there:
 
 - **Callbacks are actor-local.** Aquamarine delivers inbound frames to the
-  channel actor, not to a blocking `receive` loop.
+  channel actor, not to a separate message loop.
 - **`push` and `close` are command-style operations on the opaque channel
   handle.** They route through the channel actor instead of relying on caller
   ownership.

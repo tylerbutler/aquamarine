@@ -13,22 +13,48 @@ Gleam-native Phoenix-compatible channel server.
 
 ```gleam
 import aquamarine
+import aquamarine/codec.{type Incoming}
 import aquamarine/phoenix
+import aquamarine/error.{type AquamarineError}
 import gleam/json
+
+type State {
+  State(messages: Int)
+}
+
+let handlers =
+  aquamarine.handlers(
+    on_joined: fn(state, _reply_payload) {
+      aquamarine.continue(state)
+    },
+    on_message: fn(state, _incoming: Incoming) {
+      aquamarine.continue(State(messages: state.messages + 1))
+    },
+    on_error: fn(state, _err: AquamarineError) {
+      aquamarine.continue(state)
+    },
+    on_closed: fn(state) {
+      aquamarine.continue(state)
+    },
+  )
 
 let assert Ok(channel) =
   aquamarine.connect(
-    host: "localhost",
-    port: 4000,
-    path: "/socket/websocket",
-    topic: "room:lobby",
-    payload: json.object([]),
-    codec: phoenix.codec(),
+    aquamarine.config(
+      host: "localhost",
+      port: 4000,
+      path: "/socket/websocket",
+      topic: "room:lobby",
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    ),
+    handlers,
+    State(messages: 0),
   )
 ```
 
-That is the entire integration. From here, use
-[`push`](/guides/channels/), [`receive`](/guides/channels/), and
+That is the entire integration. Inbound messages arrive in your callback
+functions. From there, use [`push`](/guides/channels/) and
 [`close`](/guides/channels/) exactly as documented in the channel
 lifecycle guide.
 
@@ -69,9 +95,10 @@ let _ =
 ## Heartbeats
 
 The bundled codec wires up Phoenix's heartbeat format (event
-`"heartbeat"` on the `"phoenix"` topic). Aquamarine fires one every
+`"heartbeat"` on the `"phoenix"` topic). Aquamarine schedules one every
 30 seconds by default — the same cadence as the Phoenix JS client — and
-suppresses the matching replies inside `receive`, so you never see them.
+the channel actor swallows the matching replies before they reach your
+callbacks.
 
 ## Working with Beryl
 
