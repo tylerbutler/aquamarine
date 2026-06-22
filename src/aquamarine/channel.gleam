@@ -134,17 +134,49 @@ fn handle_heartbeat(
                     error.SocketSendFailed(string.inspect(reason)),
                   ),
                 )
-              apply_next(state, next)
+              apply_heartbeat_next(state, next)
             }
           }
         }
         Error(_) -> {
           let next =
             state.handlers.on_error(state.user_state, error.ChannelClosed)
-          apply_next(state, next)
+          apply_heartbeat_next(state, next)
         }
       }
     _ -> stratus.continue(state)
+  }
+}
+
+fn schedule_heartbeat(state: RuntimeState(state)) -> Nil {
+  case state.self_subject {
+    Some(subject) -> {
+      let _ =
+        process.send_after(
+          subject,
+          state.heartbeat_ms,
+          stratus.to_user_message(Heartbeat),
+        )
+      Nil
+    }
+    None -> Nil
+  }
+}
+
+fn apply_heartbeat_next(
+  state: RuntimeState(state),
+  next: Next(state),
+) -> stratus.Next(RuntimeState(state), Command(state)) {
+  case next {
+    Continue(user_state) -> {
+      let state = set_user_state(state, user_state)
+      schedule_heartbeat(state)
+      stratus.continue(state)
+    }
+    Stop -> {
+      ref.stop(state.counter)
+      stratus.stop()
+    }
   }
 }
 
@@ -168,6 +200,9 @@ const join_timeout_ms: Int = 5000
 
 const callback_self_call_message: String = "channel operations cannot be called from channel callbacks"
 
+@external(erlang, "aquamarine_ffi", "monotonic_time_ms")
+fn monotonic_time_ms() -> Int
+
 pub opaque type Channel(state) {
   CallbackChannel(
     pid: process.Pid,
@@ -181,6 +216,7 @@ type JoinState {
     reply_to: process.Subject(Result(Nil, error.AquamarineError)),
     ready_to: process.Subject(Result(Nil, error.AquamarineError)),
     join_ref: String,
+    expires_at_ms: Int,
   )
   Joined(join_ref: String)
   Closing
@@ -233,6 +269,7 @@ type Command(state) {
   StartJoin(
     reply_to: process.Subject(Result(Nil, error.AquamarineError)),
     ready_to: process.Subject(Result(Nil, error.AquamarineError)),
+    expires_at_ms: Int,
   )
   Push(
     event: String,
@@ -488,7 +525,11 @@ fn call_start_join(
 
   let reply_to = process.new_subject()
   let ready_to = process.new_subject()
-  StartJoin(reply_to:, ready_to:)
+  StartJoin(
+    reply_to:,
+    ready_to:,
+    expires_at_ms: monotonic_time_ms() + join_timeout_ms,
+  )
   |> stratus.to_user_message
   |> process.send(subject, _)
 
@@ -676,8 +717,8 @@ fn loop(
   conn: stratus.Connection,
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
   case msg {
-    stratus.User(StartJoin(reply_to:, ready_to:)) ->
-      start_join(state, conn, reply_to, ready_to)
+    stratus.User(StartJoin(reply_to:, ready_to:, expires_at_ms:)) ->
+      start_join(state, conn, reply_to, ready_to, expires_at_ms)
     stratus.User(SetSelfSubject(subject:, monitor:, reply_to:)) -> {
       let state =
         RuntimeState(
@@ -721,6 +762,7 @@ fn start_join(
   conn: stratus.Connection,
   reply_to: process.Subject(Result(Nil, error.AquamarineError)),
   ready_to: process.Subject(Result(Nil, error.AquamarineError)),
+  expires_at_ms: Int,
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
   case ref.next(state.counter) {
     Ok(join_ref) -> {
@@ -735,7 +777,7 @@ fn start_join(
           stratus.continue(
             RuntimeState(
               ..state,
-              join_state: Joining(reply_to, ready_to, join_ref),
+              join_state: Joining(reply_to, ready_to, join_ref, expires_at_ms),
             ),
           )
         Error(reason) -> {
@@ -771,14 +813,21 @@ fn handle_text(
   case state.config.codec.decode(text) {
     Ok(incoming) ->
       case state.join_state {
-        Joining(reply_to, ready_to, join_ref) ->
-          handle_join_reply(state, reply_to, ready_to, join_ref, incoming)
+        Joining(reply_to, ready_to, join_ref, expires_at_ms) ->
+          handle_join_reply(
+            state,
+            reply_to,
+            ready_to,
+            join_ref,
+            expires_at_ms,
+            incoming,
+          )
         Joined(_) -> dispatch_incoming(state, incoming)
         NotJoined | Closing -> stratus.continue(state)
       }
     Error(decode_error) ->
       case state.join_state {
-        Joining(reply_to, _, _) -> {
+        Joining(reply_to, _, _, _) -> {
           let err = error.DecodeFailed(decode_error)
           fail_join(state, reply_to, err)
         }
@@ -799,12 +848,21 @@ fn handle_join_reply(
   reply_to: process.Subject(Result(Nil, error.AquamarineError)),
   ready_to: process.Subject(Result(Nil, error.AquamarineError)),
   join_ref: String,
+  expires_at_ms: Int,
   incoming: Incoming,
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
   case incoming.event, incoming.ref {
     event, Some(reply_ref)
       if event == state.config.codec.reply_event && reply_ref == join_ref
-    -> complete_join(state, reply_to, ready_to, join_ref, incoming)
+    ->
+      complete_join(
+        state,
+        reply_to,
+        ready_to,
+        join_ref,
+        expires_at_ms,
+        incoming,
+      )
     _, _ -> stratus.continue(state)
   }
 }
@@ -814,64 +872,76 @@ fn complete_join(
   reply_to: process.Subject(Result(Nil, error.AquamarineError)),
   ready_to: process.Subject(Result(Nil, error.AquamarineError)),
   join_ref: String,
+  expires_at_ms: Int,
   incoming: Incoming,
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
-  case decode_reply_status(incoming.payload) {
-    Ok("ok") ->
-      case decode_reply_response(incoming.payload) {
-        Ok(reply) -> {
-          let joined_state = RuntimeState(..state, join_state: Joined(join_ref))
-          case state.self_subject {
-            Some(subject) -> {
-              let _ =
-                process.send_after(
-                  subject,
-                  state.heartbeat_ms,
-                  stratus.to_user_message(Heartbeat),
-                )
-              Nil
-            }
-            None -> Nil
-          }
-          process.send(reply_to, Ok(Nil))
-          case
-            exception.rescue(fn() {
-              state.handlers.on_joined(state.user_state, reply)
-            })
-          {
-            Ok(next) -> {
-              case next {
-                Continue(user_state) -> {
-                  let joined_state = set_user_state(joined_state, user_state)
-                  notify_startup_complete(joined_state)
-                  process.send(ready_to, Ok(Nil))
-                  stratus.continue(joined_state)
+  let now = monotonic_time_ms()
+  case now >= expires_at_ms {
+    True -> {
+      ref.stop(state.counter)
+      stratus.stop()
+    }
+    False -> {
+      case decode_reply_status(incoming.payload) {
+        Ok("ok") ->
+          case decode_reply_response(incoming.payload) {
+            Ok(reply) -> {
+              let joined_state =
+                RuntimeState(..state, join_state: Joined(join_ref))
+              case state.self_subject {
+                Some(subject) -> {
+                  let _ =
+                    process.send_after(
+                      subject,
+                      state.heartbeat_ms,
+                      stratus.to_user_message(Heartbeat),
+                    )
+                  Nil
                 }
-                Stop -> {
-                  process.send(ready_to, Error(error.ChannelClosed))
+                None -> Nil
+              }
+              process.send(reply_to, Ok(Nil))
+              case
+                exception.rescue(fn() {
+                  state.handlers.on_joined(state.user_state, reply)
+                })
+              {
+                Ok(next) -> {
+                  case next {
+                    Continue(user_state) -> {
+                      let joined_state =
+                        set_user_state(joined_state, user_state)
+                      notify_startup_complete(joined_state)
+                      process.send(ready_to, Ok(Nil))
+                      stratus.continue(joined_state)
+                    }
+                    Stop -> {
+                      process.send(ready_to, Error(error.ChannelClosed))
+                      ref.stop(state.counter)
+                      stratus.stop()
+                    }
+                  }
+                }
+                Error(_) -> {
+                  let err =
+                    error.InternalError("channel callback failed during join")
+                  process.send(ready_to, Error(err))
                   ref.stop(state.counter)
                   stratus.stop()
                 }
               }
             }
             Error(_) -> {
-              let err =
-                error.InternalError("channel callback failed during join")
-              process.send(ready_to, Error(err))
-              ref.stop(state.counter)
-              stratus.stop()
+              fail_join(state, reply_to, error.JoinRejected("malformed reply"))
             }
           }
+        Ok(other) -> {
+          fail_join(state, reply_to, error.JoinRejected(other))
         }
         Error(_) -> {
           fail_join(state, reply_to, error.JoinRejected("malformed reply"))
         }
       }
-    Ok(other) -> {
-      fail_join(state, reply_to, error.JoinRejected(other))
-    }
-    Error(_) -> {
-      fail_join(state, reply_to, error.JoinRejected("malformed reply"))
     }
   }
 }
@@ -898,8 +968,22 @@ fn dispatch_incoming(
       stratus.stop()
     }
     _ -> {
-      let next = state.handlers.on_message(state.user_state, incoming)
-      apply_next(state, next)
+      case
+        exception.rescue(fn() {
+          state.handlers.on_message(state.user_state, incoming)
+        })
+      {
+        Ok(next) -> apply_next(state, next)
+        Error(_) -> {
+          let closing_state = RuntimeState(..state, join_state: Closing)
+          notify_terminal_error(
+            closing_state,
+            error.InternalError("channel callback failed during message"),
+          )
+          ref.stop(closing_state.counter)
+          stratus.stop()
+        }
+      }
     }
   }
 }
@@ -1071,7 +1155,7 @@ fn handle_transport_closed(
   _reason: stratus.CloseReason,
 ) {
   case state.join_state {
-    Joining(reply_to, _, _) ->
+    Joining(reply_to, _, _, _) ->
       process.send(reply_to, Error(error.ChannelClosed))
     Closing -> Nil
     _ -> notify_terminal_closed(state)

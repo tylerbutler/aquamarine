@@ -319,6 +319,37 @@ pub fn connect_returns_internal_error_when_on_joined_panics_test() {
   channel_server.stop(server)
 }
 
+pub fn timed_out_join_does_not_call_on_joined_later_test() {
+  let events = process.new_subject()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_slow_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+    5500,
+  )
+
+  channel.connect(
+    channel.config(
+      host: "127.0.0.1",
+      port: port,
+      path: "/socket/websocket",
+      topic: test_topic,
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    ),
+    callback_handlers(),
+    CallbackState(events),
+  )
+  |> should.equal(Error(error.ReplyTimeout))
+
+  process.receive(events, 1500)
+  |> should.equal(Error(Nil))
+
+  channel_server.stop(server)
+}
+
 pub fn connect_does_not_time_out_on_slow_on_joined_test() {
   let events = process.new_subject()
   let server = channel_server.start()
@@ -728,6 +759,43 @@ pub fn runtime_error_event_calls_on_error_test() {
   channel_server.stop(server)
 }
 
+pub fn runtime_on_message_panic_notifies_on_error_test() {
+  let events = process.new_subject()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
+
+  let assert Ok(_ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      panicking_message_handlers(),
+      CallbackState(events),
+    )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Joined("ok")))
+
+  channel_server.broadcast(server, test_topic, "boom", empty_payload())
+
+  process.receive(events, 1000)
+  |> should.equal(
+    Ok(ErrorSeen(error.InternalError("channel callback failed during message"))),
+  )
+
+  channel_server.stop(server)
+}
+
 pub fn runtime_transport_failure_calls_on_error_test() {
   let events = process.new_subject()
   let server = channel_server.start()
@@ -1025,6 +1093,31 @@ fn panicking_joined_handlers() -> channel.Handlers(CallbackState) {
     on_message: fn(state: CallbackState, incoming: Incoming) {
       process.send(state.events, Message(incoming))
       channel.continue(state)
+    },
+    on_error: fn(state: CallbackState, err) {
+      process.send(state.events, ErrorSeen(err))
+      channel.continue(state)
+    },
+    on_closed: fn(state: CallbackState) {
+      process.send(state.events, Closed)
+      channel.continue(state)
+    },
+  )
+}
+
+fn panicking_message_handlers() -> channel.Handlers(CallbackState) {
+  channel.handlers(
+    on_joined: fn(state: CallbackState, payload) {
+      let decoder = {
+        use welcome <- decode.field("welcome", decode.string)
+        decode.success(welcome)
+      }
+      let assert Ok(value) = decode.run(payload, decoder)
+      process.send(state.events, Joined(value))
+      channel.continue(state)
+    },
+    on_message: fn(_state: CallbackState, _incoming: Incoming) {
+      panic as "boom"
     },
     on_error: fn(state: CallbackState, err) {
       process.send(state.events, ErrorSeen(err))

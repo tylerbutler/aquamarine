@@ -92,9 +92,9 @@ observational; the channel is already closed.
 
 `push` assigns a monotonic ref to every outbound message via the internal
 [ref counter](/guides/heartbeats-and-refs/). Aquamarine does **not**
-correlate replies to pushes for you: if you want request/response
-semantics, remember the ref you pushed and match against `incoming.ref`
-yourself.
+correlate replies to pushes for you, and the generated ref is not exposed by
+the public API. If you need request/response semantics, include your own
+correlation value in the payload and match it in later inbound messages.
 
 ## Closing cleanly
 

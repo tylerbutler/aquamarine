@@ -57,6 +57,22 @@ pub fn register_ok(server: Server, topic: String, reply: json.Json) -> Nil {
   Nil
 }
 
+pub fn register_slow_ok(
+  server: Server,
+  topic: String,
+  reply: json.Json,
+  delay_ms: Int,
+) -> Nil {
+  let channel =
+    bchannel.new(fn(_topic, _payload, sock) {
+      process.sleep(delay_ms)
+      bchannel.JoinOk(reply: Some(reply), socket: sock)
+    })
+
+  let assert Ok(_) = beryl.register(server.channels, topic, channel)
+  Nil
+}
+
 pub fn register_rejected(server: Server, topic: String) -> Nil {
   let channel =
     bchannel.new(fn(_topic, _payload, _sock) {
