@@ -1,11 +1,11 @@
 ---
 title: Getting started
-description: Install Aquamarine, open a channel, push and receive messages, and close cleanly.
+description: Install Aquamarine, open a channel, handle callbacks, push messages, and close cleanly.
 ---
 
 This guide walks through opening a channel against a Phoenix-compatible
 WebSocket endpoint (Phoenix itself or [Beryl](https://github.com/tylerbutler/beryl)),
-pushing a message, receiving a reply, and shutting down.
+pushing a message, handling callbacks, and shutting down.
 
 ## Install
 
@@ -15,30 +15,57 @@ Add Aquamarine to your Gleam project:
 gleam add aquamarine
 ```
 
-Aquamarine targets the Erlang runtime — it relies on OTP actors for its
-ref counter and heartbeat, and on [Gluegun](https://github.com/tylerbutler/gluegun)
-for the underlying WebSocket transport.
+Aquamarine targets the Erlang runtime. It uses OTP actors for its ref
+counter and heartbeat, and [Stratus](https://github.com/rawhat/stratus)
+for the WebSocket actor and transport lifecycle.
 
 ## Connect
 
 `aquamarine.connect` opens the WebSocket, joins the given topic, waits for
-the matching `phx_reply`, and starts the background heartbeat. It returns
-a `Channel` handle that you keep for the rest of the session.
+the matching `phx_reply`, starts the background heartbeat, and wires in
+your callbacks. It returns a `Channel` handle that you keep for the rest
+of the session.
 
 ```gleam
 import aquamarine
+import aquamarine/codec.{type Incoming}
+import aquamarine/error.{type AquamarineError}
 import aquamarine/phoenix
 import gleam/json
 
+type State {
+  State(messages: Int)
+}
+
 pub fn main() {
+  let handlers =
+    aquamarine.handlers(
+      on_joined: fn(state, _reply_payload) {
+        aquamarine.continue(state)
+      },
+      on_message: fn(state, _incoming: Incoming) {
+        aquamarine.continue(State(messages: state.messages + 1))
+      },
+      on_error: fn(state, _err: AquamarineError) {
+        aquamarine.continue(state)
+      },
+      on_closed: fn(state) {
+        aquamarine.continue(state)
+      },
+    )
+
   let assert Ok(channel) =
     aquamarine.connect(
-      host: "localhost",
-      port: 4000,
-      path: "/socket/websocket",
-      topic: "room:lobby",
-      payload: json.object([]),
-      codec: phoenix.codec(),
+      aquamarine.config(
+        host: "localhost",
+        port: 4000,
+        path: "/socket/websocket",
+        topic: "room:lobby",
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      handlers,
+      State(messages: 0),
     )
 
   // ... use the channel ...
@@ -49,6 +76,19 @@ pub fn main() {
 
 The `payload` argument is the join payload — it is what the server's
 `join/3` callback sees.
+
+## Handle callbacks
+
+Aquamarine hands inbound events to your callbacks instead of exposing a
+blocking `receive` call.
+
+- `on_joined` runs after the join reply arrives.
+- `on_message` runs for application messages.
+- `on_error` runs when the runtime sees a transport or decode failure.
+- `on_closed` runs when the channel closes.
+
+Return `aquamarine.continue(state)` to keep the actor running, or
+`aquamarine.stop(state)` to end it.
 
 ## Push an event
 
@@ -65,25 +105,6 @@ let _ =
   )
 ```
 
-## Receive frames
-
-`receive` blocks until the next application-level frame arrives. It
-skips heartbeat replies and binary frames so you only see real channel
-activity.
-
-```gleam
-case aquamarine.receive(channel) {
-  Ok(incoming) -> {
-    // incoming.event, incoming.topic, incoming.payload, ...
-    Nil
-  }
-  Error(_) -> Nil
-}
-```
-
-Only the process that called `connect` should call `receive` — see
-[Channel lifecycle](/guides/channels/) for the full ownership rules.
-
 ## Close
 
 `close` stops the heartbeat and ref counter actors, then closes the
@@ -96,7 +117,7 @@ let _ = aquamarine.close(channel)
 ## Next steps
 
 - [Channel lifecycle](/guides/channels/) — how `connect`, `push`,
-  `receive`, and `close` fit together, including process ownership.
+  callbacks, and `close` fit together.
 - [Phoenix and Beryl](/guides/phoenix/) — using the bundled codec
   against a real server.
 - [Error handling](/guides/error-handling/) — the `AquamarineError`

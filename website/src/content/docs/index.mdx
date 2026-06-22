@@ -1,9 +1,9 @@
 ---
 title: Aquamarine
-description: Protocol-agnostic Beryl-style WebSocket channel client for Gleam on the BEAM.
+description: Protocol-agnostic, Stratus-backed WebSocket channel runtime for Gleam on the BEAM.
 template: splash
 hero:
-  tagline: Protocol-agnostic Beryl-style WebSocket channel client for Gleam on the BEAM.
+  tagline: Protocol-agnostic, Stratus-backed WebSocket channel runtime for Gleam on the BEAM.
   image:
     file: ../../assets/aquamarine-logo.webp
     alt: Aquamarine logo
@@ -23,9 +23,9 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 ## What is Aquamarine?
 
 Aquamarine is the **client runtime** for Beryl-style WebSocket channels in
-Gleam. It owns the lifecycle — connecting, joining a topic, heartbeats,
-ref counting, and orderly shutdown — and delegates the on-the-wire format
-to a pluggable [`Codec`](/guides/codecs/).
+Gleam. It owns the lifecycle — connecting, joining a topic, callbacks,
+heartbeats, ref counting, and orderly shutdown — and delegates the
+on-the-wire format to a pluggable [`Codec`](/guides/codecs/).
 
 The bundled [`aquamarine/phoenix`](/guides/phoenix/) codec speaks the
 Phoenix Channels protocol, so Aquamarine talks to
@@ -42,23 +42,49 @@ gleam add aquamarine
 
 ```gleam
 import aquamarine
+import aquamarine/codec.{type Incoming}
+import aquamarine/error.{type AquamarineError}
 import aquamarine/phoenix
 import gleam/json
 
+type State {
+  State(messages: Int)
+}
+
+let handlers =
+  aquamarine.handlers(
+    on_joined: fn(state, _reply_payload) {
+      aquamarine.continue(state)
+    },
+    on_message: fn(state, _incoming: Incoming) {
+      aquamarine.continue(State(messages: state.messages + 1))
+    },
+    on_error: fn(state, _err: AquamarineError) {
+      aquamarine.continue(state)
+    },
+    on_closed: fn(state) {
+      aquamarine.continue(state)
+    },
+  )
+
 let assert Ok(channel) =
   aquamarine.connect(
-    host: "localhost",
-    port: 4000,
-    path: "/socket/websocket",
-    topic: "room:lobby",
-    payload: json.object([]),
-    codec: phoenix.codec(),
+    aquamarine.config(
+      host: "localhost",
+      port: 4000,
+      path: "/socket/websocket",
+      topic: "room:lobby",
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    ),
+    handlers,
+    State(messages: 0),
   )
 ```
 
 <CardGrid>
   <Card title="Getting started" icon="rocket">
-    Install, connect, push, and receive in a handful of lines.
+    Install, connect, push, and handle callbacks in a handful of lines.
     [Start here →](/getting-started/)
   </Card>
   <Card title="Phoenix & Beryl" icon="puzzle">
@@ -66,11 +92,11 @@ let assert Ok(channel) =
     [Read the guide →](/guides/phoenix/)
   </Card>
   <Card title="Ecosystem" icon="seti:default">
-    See where Aquamarine sits among Beryl, Gluegun, and Roost.
+    See where Aquamarine sits among Beryl, Stratus, and Roost.
     [View the map →](/reference/ecosystem/)
   </Card>
   <Card title="API overview" icon="open-book">
-    Four functions: `connect`, `push`, `receive`, `close`.
+    Config, callbacks, `connect`, `push`, and `close`.
     [Browse the API →](/reference/api/)
   </Card>
 </CardGrid>

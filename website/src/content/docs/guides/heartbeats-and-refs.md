@@ -39,8 +39,8 @@ The default interval is **30 seconds**, matching the Phoenix JS client.
 If `send_fn` ever fails — typically because the socket is gone — the
 heartbeat actor stops itself.
 
-Heartbeat replies from the server are filtered out inside `receive`, so
-they never surface as application-visible frames.
+Heartbeat replies from the server are filtered out before callbacks run,
+so they never surface as application-visible frames.
 
 ## What `close` does for you
 
@@ -61,7 +61,7 @@ actor.
 - If the heartbeat fails to start, `connect` tears down both the counter
   and the socket before returning.
 - If the heartbeat fails to send mid-session, the actor stops silently;
-  the next `push` or `receive` will surface the underlying transport
+  the next `push` or callback dispatch will surface the underlying transport
   error.
 
 See [Error handling](/guides/error-handling/) for the full error taxonomy.
