@@ -37,6 +37,8 @@ const callback_push_test_port: Int = 47_904
 
 const close_push_test_port: Int = 47_906
 
+const close_self_close_test_port: Int = 47_907
+
 type TestEvent {
   Joined(String)
   Message(Incoming)
@@ -961,6 +963,38 @@ pub fn close_stops_actor_and_later_push_does_not_hang_test() {
     Error(error.ReplyTimeout) -> Nil
     other -> other |> should.equal(Error(error.ChannelClosed))
   }
+
+  channel_server.stop(server)
+}
+
+pub fn close_does_not_call_on_closed_for_self_close_test() {
+  let events = process.new_subject()
+  let server = channel_server.start(close_self_close_test_port)
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: close_self_close_test_port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: phoenix.codec(),
+      ),
+      callback_handlers(),
+      CallbackState(events),
+    )
+
+  let assert Ok(Joined("ok")) = process.receive(events, 1000)
+  let assert Ok(Nil) = channel.close(ch)
+
+  process.receive(events, 20)
+  |> should.equal(Error(Nil))
 
   channel_server.stop(server)
 }

@@ -489,14 +489,15 @@ fn loop(
       handle_push(state, conn, event, payload, reply_to)
     stratus.User(Heartbeat) -> handle_heartbeat(state, conn)
     stratus.User(Close(reply_to)) -> {
-      ref.stop(state.counter)
+      let closing_state = RuntimeState(..state, join_state: Closing)
+      ref.stop(closing_state.counter)
       let result =
         stratus.close(conn, because: stratus.Normal(<<>>))
         |> result.map_error(fn(reason) {
           error.Transport(error.SocketSendFailed(string.inspect(reason)))
         })
       process.send(reply_to, result)
-      stratus.stop()
+      stratus.continue(closing_state)
     }
   }
 }
