@@ -190,6 +190,7 @@ type MonitorEvent(state) {
 type TerminalCallback {
   TerminalClosed
   TerminalError(error.AquamarineError)
+  StartupFailureReported
 }
 
 type MonitorState(state) {
@@ -517,6 +518,7 @@ fn fail_join(
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
   process.send(reply_to, Error(err))
   ref.stop(state.counter)
+  notify_terminal(state, StartupFailureReported)
   stratus.continue(RuntimeState(..state, join_state: Closing))
 }
 
@@ -759,6 +761,7 @@ fn handle_runtime_exit(
 ) -> Nil {
   case reason {
     process.Normal -> handle_terminal_callback(state)
+    _ if state.terminal == Some(StartupFailureReported) -> Nil
     process.Killed -> {
       let _ =
         state.handlers.on_error(
@@ -788,6 +791,7 @@ fn handle_terminal_callback(state: MonitorState(state)) -> Nil {
       let _ = state.handlers.on_error(state.user_state, err)
       Nil
     }
+    Some(StartupFailureReported) -> Nil
     None -> Nil
   }
 }
