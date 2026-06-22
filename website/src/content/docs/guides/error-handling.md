@@ -17,6 +17,7 @@ pub type AquamarineError {
   ChannelClosed
   DecodeFailed(codec.DecodeError)
   ReplyTimeout
+  InternalError(reason: String)
 }
 ```
 
@@ -60,17 +61,24 @@ codec you configured.
 
 ### `ReplyTimeout`
 
-Returned by `connect` when an internal actor (ref counter or heartbeat)
-fails to start. Despite the name, it does not currently surface from
-`push` waiting for a reply — Aquamarine does not correlate replies to
-pushes for you (see [Channel lifecycle](/guides/channels/#refs-and-replies)).
+Returned when an internal actor does not reply within the expected time,
+usually during `connect`, `push`, or `close`. Aquamarine does not
+correlate replies to pushes for you (see
+[Channel lifecycle](/guides/channels/#refs-and-replies)).
+
+### `InternalError(reason)`
+
+Returned when Aquamarine itself cannot start or manage an internal actor,
+such as the ref counter. This is usually a setup or runtime failure inside
+the library rather than a problem with your server.
 
 ## A complete handler
 
 ```gleam
 import aquamarine
 import aquamarine/error.{
-  ChannelClosed, DecodeFailed, JoinRejected, ReplyTimeout, Transport,
+  ChannelClosed, DecodeFailed, InternalError, JoinRejected, ReplyTimeout,
+  Transport,
 }
 
 let handlers =
@@ -85,13 +93,14 @@ let handlers =
         DecodeFailed(d) -> log_decode_error(d)
         ChannelClosed -> reconnect()
         JoinRejected(reason) -> give_up(reason)
+        InternalError(reason) -> crash(reason)
         ReplyTimeout -> retry()
       }
-      aquamarine.stop(state)
+      aquamarine.stop()
     },
     on_closed: fn(state) {
       reconnect()
-      aquamarine.stop(state)
+      aquamarine.stop()
     },
     on_joined: fn(state, _payload) {
       aquamarine.continue(state)

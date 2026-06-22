@@ -12,7 +12,7 @@ it.
 
 | Function    | What it does                                                       |
 | ----------- | ------------------------------------------------------------------ |
-| `connect`   | Starts the Stratus actor, joins the topic, waits for the join reply, and starts the heartbeat. |
+| `connect`   | Starts the Stratus actor, joins the topic, waits for the join reply, and schedules the heartbeat. |
 | `push`      | Encodes an outbound event with a fresh ref and hands it to the transport. Does not wait for a reply. |
 | `close`     | Stops the heartbeat and ref actors, then closes the socket.        |
 
@@ -27,16 +27,17 @@ state inside the channel actor and calls your callbacks as frames arrive.
 - `on_closed` runs when the channel closes.
 
 Each callback returns `aquamarine.continue(state)` to keep the actor
-running or `aquamarine.stop(state)` to end it.
+running or `aquamarine.stop()` to end it.
 
-## Process ownership
+## Actor ownership
 
-The transport is owned by the process that called `connect`. From there:
+The channel is owned by the Stratus actor that `connect` starts. From there:
 
 - **Callbacks are actor-local.** Aquamarine delivers inbound frames to the
   channel actor, not to a blocking `receive` loop.
-- **`push` and `close` are safe from any process.** They send through the
-  socket actor, which is fire-and-forget at the call site.
+- **`push` and `close` are command-style operations on the opaque channel
+  handle.** They route through the channel actor instead of relying on caller
+  ownership.
 
 A common pattern is to call `connect` from a per-channel actor, keep state
 in the callbacks, and let other parts of your app call `push` or `close`
@@ -51,7 +52,7 @@ happened, in order:
 2. The ref counter actor starts.
 3. The join frame is sent.
 4. A `phx_reply` matching the join ref arrives with `status: "ok"`.
-5. The heartbeat actor starts.
+5. The channel actor schedules the first heartbeat tick.
 
 If any step fails, every resource started so far is torn down before
 `connect` returns the error — you never get a half-open channel back.

@@ -4,11 +4,11 @@ description: How Aquamarine keeps the channel alive and assigns refs, and what c
 ---
 
 Two small OTP actors live behind every `Channel`: a **ref counter** that
-hands out monotonic refs for outbound frames, and a **heartbeat** that
-periodically sends a heartbeat frame using one of those refs. Both are
-started by `connect` and stopped by `close`. You should rarely need to
-think about them — this page is here so you know what's happening if you
-ever do.
+hands out monotonic refs for outbound frames, and a **heartbeat** loop
+driven by the channel actor that periodically sends a heartbeat frame
+using one of those refs. Both are started by `connect` and stopped by
+`close`. You should rarely need to think about them — this page is here
+so you know what's happening if you ever do.
 
 ## Refs
 
@@ -28,16 +28,18 @@ out-of-band.
 
 ## Heartbeats
 
-The heartbeat actor is started after the join reply succeeds. On each
-tick it:
+The channel actor schedules the first heartbeat after the join reply
+succeeds. On each tick it:
 
 1. Asks the ref counter for the next ref.
 2. Calls `codec.encode_heartbeat(ref)` to build the frame.
 3. Sends the frame through the same socket as `push`.
 
 The default interval is **30 seconds**, matching the Phoenix JS client.
-If `send_fn` ever fails — typically because the socket is gone — the
-heartbeat actor stops itself.
+If the heartbeat send or ref lookup fails — typically because the socket
+is gone or the channel has already closed — the failure is reported to
+`on_error`, and the returned `Next` value controls whether the channel
+keeps running or stops.
 
 Heartbeat replies from the server are filtered out before callbacks run,
 so they never surface as application-visible frames.
@@ -57,11 +59,11 @@ actor.
 ## When things go wrong
 
 - If the ref counter fails to start, `connect` returns
-  `Error(Transport(...))` and tears down the socket.
-- If the heartbeat fails to start, `connect` tears down both the counter
-  and the socket before returning.
-- If the heartbeat fails to send mid-session, the actor stops silently;
-  the next `push` or callback dispatch will surface the underlying transport
-  error.
+  `Error(InternalError(...))` and tears down the socket.
+- There is no separate heartbeat startup failure anymore; the heartbeat is
+  scheduled by the channel actor after join.
+- If a heartbeat send or ref lookup fails mid-session, the failure is
+  delivered to `on_error`, and the `Next` value you return decides whether
+  the channel continues or stops.
 
 See [Error handling](/guides/error-handling/) for the full error taxonomy.

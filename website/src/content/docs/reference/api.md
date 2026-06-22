@@ -39,7 +39,7 @@ pub fn handlers(
 
 Builds the callback set that runs inside the channel actor. Use
 `aquamarine.continue(state)` to keep the actor running and
-`aquamarine.stop(state)` to end it.
+`aquamarine.stop()` to end it.
 
 ## `connect`
 
@@ -52,7 +52,7 @@ pub fn connect(
 ```
 
 Open a WebSocket, join `topic` with `payload`, wait for the join reply,
-start the heartbeat, and hand control to the callbacks.
+schedule the heartbeat, and hand control to the callbacks.
 
 ## `push`
 
@@ -81,7 +81,7 @@ The callback helpers return the next actor action:
 
 - `continue(state)` keeps the channel actor running with the updated
   state.
-- `stop(state)` ends the actor loop and closes the channel cleanly.
+- `stop()` ends the actor loop and closes the channel cleanly.
 
 ## Types you'll see
 

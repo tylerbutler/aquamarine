@@ -16,15 +16,15 @@ gleam add aquamarine
 ```
 
 Aquamarine targets the Erlang runtime. It uses OTP actors for its ref
-counter and heartbeat, and [Stratus](https://github.com/rawhat/stratus)
+counter and heartbeat scheduling, and [Stratus](https://github.com/rawhat/stratus)
 for the WebSocket actor and transport lifecycle.
 
 ## Connect
 
 `aquamarine.connect` opens the WebSocket, joins the given topic, waits for
-the matching `phx_reply`, starts the background heartbeat, and wires in
-your callbacks. It returns a `Channel` handle that you keep for the rest
-of the session.
+the matching `phx_reply`, schedules the first heartbeat tick after join,
+and wires in your callbacks. It returns a `Channel` handle that you keep
+for the rest of the session.
 
 ```gleam
 import aquamarine
@@ -88,7 +88,7 @@ blocking `receive` call.
 - `on_closed` runs when the channel closes.
 
 Return `aquamarine.continue(state)` to keep the actor running, or
-`aquamarine.stop(state)` to end it.
+`aquamarine.stop()` to end it.
 
 ## Push an event
 
