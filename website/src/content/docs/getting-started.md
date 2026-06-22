@@ -90,7 +90,9 @@ separate loop.
   run for your own `close(channel)` call.
 
 Return `aquamarine.continue(state)` to keep the actor running, or
-`aquamarine.stop()` to end it.
+`aquamarine.stop()` to end it. For terminal callbacks, such as `on_closed` and
+protocol/transport terminal `on_error`, the channel has already stopped and the
+return value is ignored.
 
 ## Push an event
 

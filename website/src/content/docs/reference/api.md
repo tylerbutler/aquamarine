@@ -39,7 +39,8 @@ pub fn handlers(
 
 Builds the callback set that runs inside the channel actor. Use
 `aquamarine.continue(state)` to keep the actor running and
-`aquamarine.stop()` to end it.
+`aquamarine.stop()` to end it. Terminal callbacks are delivered after the
+actor has already stopped, so their return value is observational.
 
 ## `connect`
 
@@ -73,7 +74,9 @@ transport. Does **not** wait for a reply.
 pub fn close(channel: Channel(state)) -> Result(Nil, AquamarineError)
 ```
 
-Stop the heartbeat and ref actors, then close the transport.
+Ask the channel actor to send a normal close and stop. Already-queued actor
+messages may run first; once close is processed, the runtime stops its ref and
+heartbeat state and closes the transport.
 
 ## `continue` and `stop`
 
@@ -81,7 +84,9 @@ The callback helpers return the next actor action:
 
 - `continue(state)` keeps the channel actor running with the updated
   state.
-- `stop()` ends the actor loop and closes the channel cleanly.
+- `stop()` ends the actor loop and closes the channel cleanly. Terminal
+  callbacks run after the actor is already stopped, so their `Next` value is
+  ignored.
 
 ## Types you'll see
 

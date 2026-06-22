@@ -109,3 +109,8 @@ let handlers =
     },
   )
 ```
+
+For terminal callbacks, such as `on_closed` and transport/protocol errors that
+close the channel, the runtime has already stopped. Return `stop()` or
+`continue(state)` for type compatibility; it will not reopen or keep the
+channel alive.

@@ -304,38 +304,25 @@ fn do_connect(
           Error(err)
         }
       })
-      let self_reply = process.new_subject()
-      SetSelfSubject(
-        subject: started.data,
-        monitor: monitor,
-        reply_to: self_reply,
-      )
-      |> stratus.to_user_message
-      |> process.send(started.data, _)
-
-      use _ <- result.try(case process.receive(self_reply, join_timeout_ms) {
-        Ok(Ok(Nil)) -> Ok(Nil)
-        _ -> {
+      use _ <- result.try(
+        call_runtime(started.pid, started.data, fn(reply_to) {
+          SetSelfSubject(
+            subject: started.data,
+            monitor: monitor,
+            reply_to: reply_to,
+          )
+        })
+        |> result.map_error(fn(err) {
           let _ = request_close(started.data)
-          Error(error.ReplyTimeout)
-        }
-      })
+          err
+        }),
+      )
 
-      let reply_to = process.new_subject()
-      StartJoin(reply_to)
-      |> stratus.to_user_message
-      |> process.send(started.data, _)
-
-      case process.receive(reply_to, join_timeout_ms) {
-        Ok(Ok(Nil)) ->
-          Ok(CallbackChannel(pid: started.pid, subject: started.data))
-        Ok(Error(err)) -> {
+      case call_runtime(started.pid, started.data, StartJoin) {
+        Ok(Nil) -> Ok(CallbackChannel(pid: started.pid, subject: started.data))
+        Error(err) -> {
           let _ = request_close(started.data)
           Error(err)
-        }
-        Error(_) -> {
-          let _ = request_close(started.data)
-          Error(error.ReplyTimeout)
         }
       }
     }
@@ -713,27 +700,35 @@ fn start_runtime_monitor(
   let ready = process.new_subject()
   process.spawn_unlinked(fn() {
     let subject = process.new_subject()
-    process.send(ready, subject)
-
     let monitor = process.monitor(pid)
-    let selector =
-      process.new_selector()
-      |> process.select_map(subject, MonitorCommand)
-      |> process.select_specific_monitor(monitor, RuntimeDown)
+    case process.is_alive(pid) {
+      True -> {
+        process.send(ready, Ok(subject))
 
-    monitor_loop(
-      MonitorState(
-        handlers:,
-        user_state: initial_state,
-        counter:,
-        terminal: None,
-      ),
-      selector,
-    )
+        let selector =
+          process.new_selector()
+          |> process.select_map(subject, MonitorCommand)
+          |> process.select_specific_monitor(monitor, RuntimeDown)
+
+        monitor_loop(
+          MonitorState(
+            handlers:,
+            user_state: initial_state,
+            counter:,
+            terminal: None,
+          ),
+          selector,
+        )
+      }
+      False -> {
+        process.demonitor_process(monitor:)
+        process.send(ready, Error(error.ChannelClosed))
+      }
+    }
   })
 
   case process.receive(ready, 1000) {
-    Ok(subject) -> Ok(subject)
+    Ok(result) -> result
     Error(_) ->
       Error(error.InternalError("failed to start runtime monitor actor"))
   }

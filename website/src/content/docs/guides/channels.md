@@ -56,8 +56,9 @@ happened, in order:
 4. A `phx_reply` matching the join ref arrives with `status: "ok"`.
 5. The channel actor schedules the first heartbeat tick.
 
-If any step fails, every resource started so far is torn down before
-`connect` returns the error — you never get a half-open channel back.
+If any step fails, Aquamarine starts cleanup for every resource opened so far
+before `connect` returns the error — you never get a usable half-open channel
+back.
 
 ## What callbacks see
 
@@ -69,6 +70,10 @@ Aquamarine filters transport noise before it reaches your callbacks. It:
 - Translates protocol close events into `on_closed`.
 - Translates protocol error events into `on_error(ChannelClosed)`.
 - Delivers other inbound frames as `Incoming` records.
+
+Terminal callbacks (`on_closed` and protocol/transport terminal `on_error`
+callbacks) run after the channel actor has stopped. Their return value is
+observational; the channel is already closed.
 
 ## Refs and replies
 
@@ -83,8 +88,9 @@ yourself.
 `close` asks the actor to send a normal close and stop. It does not call your
 `on_closed` callback. If the actor is already gone or does not reply in time,
 `close` returns `ChannelClosed`, `ReplyTimeout`, or the appropriate error from
-the underlying transport. It still stops the heartbeat and ref actors, so a
-failed close does not leak actors.
+the underlying transport. Close is serialized through the channel actor, so any
+already-queued heartbeat tick may run first; once close is processed, the
+runtime stops its ref and heartbeat state.
 
 ## Related
 

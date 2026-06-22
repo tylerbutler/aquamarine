@@ -46,10 +46,10 @@ so they never surface as application-visible frames.
 
 ## What `close` does for you
 
-`close` stops the heartbeat actor first, then the ref counter, then
-closes the transport. There is no race in which a heartbeat tick races a
-close — by the time the transport is touched, the heartbeat is no longer
-ticking.
+Heartbeats and close requests are serialized through the channel actor. An
+already-queued heartbeat tick may run before a queued close request, but once
+close is processed the runtime stops its ref and heartbeat state before the
+actor exits.
 
 The heartbeat actor's `Heartbeat` and `Message` types and the ref
 counter's `Counter` and `Message` types are all opaque. The public API
