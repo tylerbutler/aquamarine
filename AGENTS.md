@@ -36,7 +36,7 @@ CI currently runs on OTP 28 and Gleam 1.16.0, then executes `gleam deps download
 - The callbacks own inbound flow. `push` and `close` are designed to be safe from other processes because they send through the socket actor.
 - Callback handlers should keep state via `continue` and end cleanly via `stop`.
 - Tests use Gleeunit. The suite entrypoint is `test/aquamarine_test.gleam`, and discovered test modules expose public functions such as `codec_tests`, `heartbeat_tests`, and `integration_tests`.
-- Codec tests compare against `phoenix_channel_fixtures`; integration tests start a local Beryl server via Mist on port `47891`.
+- Codec tests compare against `phoenix_channel_fixtures`; integration tests start a local Beryl server via Mist on a dynamically assigned port.
 - Prefer `assert`-style Gleeunit checks and straightforward grouping, matching the existing tests.
 
 <!-- repoverlay:profile:development:begin -->

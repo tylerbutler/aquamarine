@@ -373,10 +373,11 @@ fn start_counter() -> Result(ref.Counter, error.AquamarineError) {
   })
 }
 
-fn map_start_error(start_error: actor.StartError) -> error.AquamarineError {
+@internal
+pub fn map_start_error(start_error: actor.StartError) -> error.AquamarineError {
   case start_error {
     actor.InitFailed(reason) ->
-      case string.contains(reason, "handshake failed with status") {
+      case is_handshake_failure(reason) {
         True -> error.Transport(error.HandshakeFailed(reason))
         False -> error.Transport(error.SocketConnectionFailed(reason))
       }
@@ -384,6 +385,14 @@ fn map_start_error(start_error: actor.StartError) -> error.AquamarineError {
       error.Transport(error.SocketConnectionFailed("connection timed out"))
     actor.InitExited(reason) ->
       error.Transport(error.SocketConnectionFailed(string.inspect(reason)))
+  }
+}
+
+fn is_handshake_failure(reason: String) -> Bool {
+  string.contains(reason, "WebSocket handshake failed with status")
+  || {
+    string.contains(reason, "WebSocket handshake failed:")
+    && !string.contains(reason, "WebSocket handshake failed: Sock(")
   }
 }
 
