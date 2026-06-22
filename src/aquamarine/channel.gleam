@@ -55,7 +55,7 @@ fn handle_push(
               let err =
                 error.Transport(error.SocketSendFailed(string.inspect(reason)))
               process.send(reply_to, Error(err))
-              let _ = state.handlers.on_error(state.user_state, err)
+              notify_terminal_error(state, err)
               ref.stop(state.counter)
               stratus.stop()
             }
@@ -65,7 +65,7 @@ fn handle_push(
           let err =
             error.InternalError("failed to obtain push ref from counter")
           process.send(reply_to, Error(err))
-          let _ = state.handlers.on_error(state.user_state, err)
+          notify_terminal_error(state, err)
           ref.stop(state.counter)
           stratus.stop()
         }
@@ -179,6 +179,7 @@ type RuntimeState(state) {
 
 type MonitorMessage(state) {
   UserStateChanged(state)
+  RuntimeTerminal(TerminalCallback)
 }
 
 type MonitorEvent(state) {
@@ -186,11 +187,17 @@ type MonitorEvent(state) {
   RuntimeDown(process.Down)
 }
 
+type TerminalCallback {
+  TerminalClosed
+  TerminalError(error.AquamarineError)
+}
+
 type MonitorState(state) {
   MonitorState(
     handlers: Handlers(state),
     user_state: state,
     counter: ref.Counter,
+    terminal: option.Option(TerminalCallback),
   )
 }
 
@@ -635,13 +642,13 @@ fn dispatch_incoming(
     -> stratus.continue(state)
     event if event == state.config.codec.close_event -> {
       let closing_state = RuntimeState(..state, join_state: Closing)
-      let _ = state.handlers.on_closed(state.user_state)
+      notify_terminal_closed(closing_state)
       ref.stop(closing_state.counter)
       stratus.stop()
     }
     event if event == state.config.codec.error_event -> {
       let closing_state = RuntimeState(..state, join_state: Closing)
-      let _ = state.handlers.on_error(state.user_state, error.ChannelClosed)
+      notify_terminal_error(closing_state, error.ChannelClosed)
       ref.stop(closing_state.counter)
       stratus.stop()
     }
@@ -676,6 +683,27 @@ fn set_user_state(
   RuntimeState(..state, user_state: user_state)
 }
 
+fn notify_terminal_closed(state: RuntimeState(state)) -> Nil {
+  notify_terminal(state, TerminalClosed)
+}
+
+fn notify_terminal_error(
+  state: RuntimeState(state),
+  err: error.AquamarineError,
+) -> Nil {
+  notify_terminal(state, TerminalError(err))
+}
+
+fn notify_terminal(
+  state: RuntimeState(state),
+  terminal: TerminalCallback,
+) -> Nil {
+  case state.monitor {
+    Some(monitor) -> process.send(monitor, RuntimeTerminal(terminal))
+    None -> Nil
+  }
+}
+
 fn start_runtime_monitor(
   pid: process.Pid,
   handlers: Handlers(state),
@@ -694,7 +722,12 @@ fn start_runtime_monitor(
       |> process.select_specific_monitor(monitor, RuntimeDown)
 
     monitor_loop(
-      MonitorState(handlers:, user_state: initial_state, counter:),
+      MonitorState(
+        handlers:,
+        user_state: initial_state,
+        counter:,
+        terminal: None,
+      ),
       selector,
     )
   })
@@ -713,6 +746,8 @@ fn monitor_loop(
   case process.selector_receive_forever(selector) {
     MonitorCommand(UserStateChanged(user_state)) ->
       monitor_loop(MonitorState(..state, user_state: user_state), selector)
+    MonitorCommand(RuntimeTerminal(terminal)) ->
+      monitor_loop(MonitorState(..state, terminal: Some(terminal)), selector)
     RuntimeDown(down) -> handle_runtime_down(state, down)
   }
 }
@@ -730,7 +765,7 @@ fn handle_runtime_exit(
   reason: process.ExitReason,
 ) -> Nil {
   case reason {
-    process.Normal -> Nil
+    process.Normal -> handle_terminal_callback(state)
     process.Killed -> {
       let _ =
         state.handlers.on_error(
@@ -750,6 +785,20 @@ fn handle_runtime_exit(
   }
 }
 
+fn handle_terminal_callback(state: MonitorState(state)) -> Nil {
+  case state.terminal {
+    Some(TerminalClosed) -> {
+      let _ = state.handlers.on_closed(state.user_state)
+      Nil
+    }
+    Some(TerminalError(err)) -> {
+      let _ = state.handlers.on_error(state.user_state, err)
+      Nil
+    }
+    None -> Nil
+  }
+}
+
 fn handle_transport_closed(
   state: RuntimeState(state),
   _reason: stratus.CloseReason,
@@ -757,10 +806,7 @@ fn handle_transport_closed(
   case state.join_state {
     Joining(reply_to, _) -> process.send(reply_to, Error(error.ChannelClosed))
     Closing -> Nil
-    _ -> {
-      let _ = state.handlers.on_closed(state.user_state)
-      Nil
-    }
+    _ -> notify_terminal_closed(state)
   }
   ref.stop(state.counter)
   Nil
