@@ -77,10 +77,11 @@ yourself.
 
 ## Closing cleanly
 
-`close` is idempotent at the API level: calling it on an already-closed
-channel returns a transport error rather than crashing. It always tries
-to stop the heartbeat and ref actors before touching the socket, so even
-if the close itself fails you do not leak actors.
+`close` asks the actor to send a normal close and stop. If the actor is
+already gone or does not reply in time, `close` returns
+`ReplyTimeout` or the appropriate error from the underlying transport.
+It still tries to stop the heartbeat and ref actors before touching the
+socket, so a failed close does not leak actors.
 
 ## Related
 
