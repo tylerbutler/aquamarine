@@ -491,11 +491,8 @@ pub fn close_stops_actor_and_later_push_does_not_hang_test() {
   let assert Ok(Joined("ok")) = process.receive(events, 1000)
   let assert Ok(Nil) = channel.close(ch)
 
-  case channel.push(ch, "after_close", empty_payload()) {
-    Error(error.ChannelClosed) -> Nil
-    Error(error.ReplyTimeout) -> Nil
-    other -> other |> should.equal(Error(error.ChannelClosed))
-  }
+  channel.push(ch, "after_close", empty_payload())
+  |> should.equal(Error(error.ChannelClosed))
 
   channel_server.stop(server)
 }

@@ -52,24 +52,20 @@ fn handle_push(
               stratus.continue(state)
             }
             Error(reason) -> {
-              process.send(
-                reply_to,
-                Error(
-                  error.Transport(
-                    error.SocketSendFailed(string.inspect(reason)),
-                  ),
-                ),
-              )
+              let err =
+                error.Transport(error.SocketSendFailed(string.inspect(reason)))
+              process.send(reply_to, Error(err))
+              let _ = state.handlers.on_error(state.user_state, err)
               ref.stop(state.counter)
               stratus.stop()
             }
           }
         }
         Error(_) -> {
-          process.send(
-            reply_to,
-            Error(error.InternalError("failed to obtain push ref from counter")),
-          )
+          let err =
+            error.InternalError("failed to obtain push ref from counter")
+          process.send(reply_to, Error(err))
+          let _ = state.handlers.on_error(state.user_state, err)
           ref.stop(state.counter)
           stratus.stop()
         }

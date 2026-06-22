@@ -105,11 +105,18 @@ pub fn broadcast(
   beryl.broadcast(server.channels, topic, event, payload)
 }
 
-pub fn stop(_server: Server) -> Nil {
+pub fn stop(server: Server) -> Nil {
+  process.unlink(server.pid)
+  process.send_exit(server.pid)
+
+  let assert Ok(coordinator_pid) =
+    process.subject_owner(server.channels.coordinator)
+  process.unlink(coordinator_pid)
+  process.send_exit(coordinator_pid)
+
   Nil
 }
 
 pub fn crash(server: Server) -> Nil {
-  process.unlink(server.pid)
-  process.send_exit(server.pid)
+  stop(server)
 }
