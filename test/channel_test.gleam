@@ -58,6 +58,10 @@ type BlockingState {
   BlockingState(events: process.Subject(BlockingEvent), blocked: Bool)
 }
 
+type PushResultEvent {
+  PushResult(Result(Nil, error.AquamarineError))
+}
+
 // -- Helpers ----------------------------------------------------------------
 
 fn empty_payload() -> json.Json {
@@ -142,6 +146,21 @@ fn slow_push_codec() -> codec.Codec {
       process.sleep(5500)
       phoenix_codec.encode_push(join_ref, push_ref, topic, event, payload)
     },
+    encode_heartbeat: phoenix_codec.encode_heartbeat,
+    join_event: phoenix_codec.join_event,
+    reply_event: phoenix_codec.reply_event,
+    close_event: phoenix_codec.close_event,
+    error_event: phoenix_codec.error_event,
+    heartbeat_topic: phoenix_codec.heartbeat_topic,
+  )
+}
+
+fn panic_push_codec() -> codec.Codec {
+  let phoenix_codec = phoenix.codec()
+  codec.Codec(
+    decode: phoenix_codec.decode,
+    encode_join: phoenix_codec.encode_join,
+    encode_push: fn(_, _, _, _, _) { panic as "boom" },
     encode_heartbeat: phoenix_codec.encode_heartbeat,
     join_event: phoenix_codec.join_event,
     reply_event: phoenix_codec.reply_event,
@@ -261,6 +280,41 @@ pub fn connect_returns_channel_closed_when_on_joined_stops_test() {
 
   process.receive(events, 1000)
   |> should.equal(Ok(Joined("stop")))
+
+  channel_server.stop(server)
+}
+
+pub fn connect_returns_internal_error_when_on_joined_panics_test() {
+  let result = process.new_subject()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
+
+  process.spawn(fn() {
+    let connect_result =
+      channel.connect(
+        channel.config(
+          host: "127.0.0.1",
+          port: port,
+          path: "/socket/websocket",
+          topic: test_topic,
+          payload: json.object([]),
+          codec: phoenix.codec(),
+        ),
+        panicking_joined_handlers(),
+        CallbackState(process.new_subject()),
+      )
+    process.send(result, connect_result)
+  })
+
+  process.receive(result, 1000)
+  |> should.equal(
+    Ok(Error(error.InternalError("channel callback failed during join"))),
+  )
 
   channel_server.stop(server)
 }
@@ -514,6 +568,44 @@ pub fn claimed_push_waits_for_real_result_test() {
   |> should.equal(Ok("claimed"))
 
   let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+pub fn claimed_push_returns_internal_error_when_encode_panics_test() {
+  let events = process.new_subject()
+  let results = process.new_subject()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_echo(server, test_topic, process.new_subject())
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: json.object([]),
+        codec: panic_push_codec(),
+      ),
+      callback_handlers(),
+      CallbackState(events),
+    )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Joined("ok")))
+
+  process.spawn(fn() {
+    channel.push(ch, "panic", empty_payload())
+    |> PushResult
+    |> process.send(results, _)
+  })
+
+  process.receive(results, 6000)
+  |> should.equal(
+    Ok(PushResult(error.InternalError("failed to encode push frame") |> Error)),
+  )
+
   channel_server.stop(server)
 }
 
@@ -912,6 +1004,24 @@ fn stopping_handlers() -> channel.Handlers(CallbackState) {
       process.send(state.events, Joined(value))
       channel.stop()
     },
+    on_message: fn(state: CallbackState, incoming: Incoming) {
+      process.send(state.events, Message(incoming))
+      channel.continue(state)
+    },
+    on_error: fn(state: CallbackState, err) {
+      process.send(state.events, ErrorSeen(err))
+      channel.continue(state)
+    },
+    on_closed: fn(state: CallbackState) {
+      process.send(state.events, Closed)
+      channel.continue(state)
+    },
+  )
+}
+
+fn panicking_joined_handlers() -> channel.Handlers(CallbackState) {
+  channel.handlers(
+    on_joined: fn(_state: CallbackState, _payload) { panic as "boom" },
     on_message: fn(state: CallbackState, incoming: Incoming) {
       process.send(state.events, Message(incoming))
       channel.continue(state)

@@ -3,6 +3,7 @@
 import aquamarine/codec.{type Codec, type Incoming}
 import aquamarine/error
 import aquamarine/ref
+import exception
 import gleam/bool
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -43,22 +44,37 @@ fn handle_push(
     Joined(join_ref) ->
       case ref.next(state.counter) {
         Ok(push_ref) -> {
-          let frame =
-            state.config.codec.encode_push(
-              join_ref,
-              push_ref,
-              state.config.topic,
-              event,
-              payload,
-            )
-          case stratus.send_text_message(conn, frame) {
-            Ok(Nil) -> {
-              process.send(reply_to, Ok(Nil))
-              stratus.continue(state)
+          case
+            exception.rescue(fn() {
+              state.config.codec.encode_push(
+                join_ref,
+                push_ref,
+                state.config.topic,
+                event,
+                payload,
+              )
+            })
+          {
+            Ok(frame) -> {
+              case stratus.send_text_message(conn, frame) {
+                Ok(Nil) -> {
+                  process.send(reply_to, Ok(Nil))
+                  stratus.continue(state)
+                }
+                Error(reason) -> {
+                  let err =
+                    error.Transport(
+                      error.SocketSendFailed(string.inspect(reason)),
+                    )
+                  process.send(reply_to, Error(err))
+                  notify_terminal_error(state, err)
+                  ref.stop(state.counter)
+                  stratus.stop()
+                }
+              }
             }
-            Error(reason) -> {
-              let err =
-                error.Transport(error.SocketSendFailed(string.inspect(reason)))
+            Error(_) -> {
+              let err = error.InternalError("failed to encode push frame")
               process.send(reply_to, Error(err))
               notify_terminal_error(state, err)
               ref.stop(state.counter)
@@ -818,16 +834,30 @@ fn complete_join(
             None -> Nil
           }
           process.send(reply_to, Ok(Nil))
-          let next = state.handlers.on_joined(state.user_state, reply)
-          case next {
-            Continue(user_state) -> {
-              let joined_state = set_user_state(joined_state, user_state)
-              notify_startup_complete(joined_state)
-              process.send(ready_to, Ok(Nil))
-              stratus.continue(joined_state)
+          case
+            exception.rescue(fn() {
+              state.handlers.on_joined(state.user_state, reply)
+            })
+          {
+            Ok(next) -> {
+              case next {
+                Continue(user_state) -> {
+                  let joined_state = set_user_state(joined_state, user_state)
+                  notify_startup_complete(joined_state)
+                  process.send(ready_to, Ok(Nil))
+                  stratus.continue(joined_state)
+                }
+                Stop -> {
+                  process.send(ready_to, Error(error.ChannelClosed))
+                  ref.stop(state.counter)
+                  stratus.stop()
+                }
+              }
             }
-            Stop -> {
-              process.send(ready_to, Error(error.ChannelClosed))
+            Error(_) -> {
+              let err =
+                error.InternalError("channel callback failed during join")
+              process.send(ready_to, Error(err))
               ref.stop(state.counter)
               stratus.stop()
             }

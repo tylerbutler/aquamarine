@@ -30,8 +30,8 @@ further:
 
 | Variant | Meaning |
 | --- | --- |
-| `HandshakeFailed(reason)` | The WebSocket upgrade failed or the Stratus actor could not complete startup. |
-| `SocketConnectionFailed(reason)` | Opening the underlying socket failed before the channel could join. |
+| `HandshakeFailed(reason)` | The WebSocket upgrade failed after the socket connection was opened. |
+| `SocketConnectionFailed(reason)` | Opening the underlying socket failed, or the Stratus actor timed out/exited before the channel could join. |
 | `SocketSendFailed(reason)` | Sending a WebSocket frame failed. |
 | `SocketReceiveFailed(reason)` | Receiving a WebSocket frame failed after startup. |
 | `InvalidTransportConfig(reason)` | The host, port, path, scheme, or request configuration was invalid. |

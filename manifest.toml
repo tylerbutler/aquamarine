@@ -29,6 +29,7 @@ packages = [
 
 [requirements]
 beryl = { git = "https://github.com/tylerbutler/beryl.git", ref = "9e80433c6ff2b24c43815196c04ed4c9fd21cd21" }
+exception = { version = ">= 2.1.0 and < 3.0.0" }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_http = { version = ">= 4.3.0 and < 5.0.0" }
 gleam_json = { version = ">= 3.0.0 and < 4.0.0" }
