@@ -111,7 +111,7 @@ let _ =
 
 ## Close
 
-`close` stops the heartbeat and ref counter actors, then closes the
+`close` stops heartbeat timer state and the ref counter, then closes the
 underlying socket.
 
 ```gleam

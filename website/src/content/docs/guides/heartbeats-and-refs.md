@@ -3,12 +3,12 @@ title: Heartbeats and refs
 description: How Aquamarine keeps the channel alive and assigns refs, and what callers do not need to manage.
 ---
 
-Two small OTP actors live behind every `Channel`: a **ref counter** that
-hands out monotonic refs for outbound frames, and a **heartbeat** loop
-driven by the channel actor that periodically sends a heartbeat frame
-using one of those refs. Both are started by `connect` and stopped by
-`close`. You should rarely need to think about them — this page is here
-so you know what's happening if you ever do.
+Every `Channel` owns a **ref counter** actor that hands out monotonic refs
+for outbound frames. Heartbeats run as timer state inside the channel actor:
+each tick asks the counter for a ref, encodes a heartbeat frame, and sends it
+through the socket. `connect` starts this state, and `close` stops it. You
+should rarely need to think about it — this page is here so you know what's
+happening if you ever do.
 
 ## Refs
 
@@ -51,10 +51,10 @@ already-queued heartbeat tick may run before a queued close request, but once
 close is processed the runtime stops its ref and heartbeat state before the
 actor exits.
 
-The heartbeat actor's `Heartbeat` and `Message` types and the ref
-counter's `Counter` and `Message` types are all opaque. The public API
-gives you no way (and no reason) to send messages directly to either
-actor.
+The standalone heartbeat helper's `Heartbeat` and `Message` types and the
+ref counter's `Counter` and `Message` types are all opaque. The public API
+gives you no way (and no reason) to send messages directly to runtime
+internals.
 
 ## When things go wrong
 

@@ -177,9 +177,11 @@ type RuntimeState(state) {
   )
 }
 
-type MonitorMessage(state) {
+@internal
+pub opaque type MonitorMessage(state) {
   UserStateChanged(state)
   RuntimeTerminal(TerminalCallback)
+  RuntimeStartupComplete
 }
 
 type MonitorEvent(state) {
@@ -199,6 +201,7 @@ type MonitorState(state) {
     user_state: state,
     counter: ref.Counter,
     terminal: option.Option(TerminalCallback),
+    startup_complete: Bool,
   )
 }
 
@@ -604,6 +607,7 @@ fn complete_join(
                 }
                 None -> Nil
               }
+              notify_startup_complete(joined_state)
               process.send(reply_to, Ok(Nil))
               stratus.continue(joined_state)
             }
@@ -700,7 +704,15 @@ fn notify_terminal(
   }
 }
 
-fn start_runtime_monitor(
+fn notify_startup_complete(state: RuntimeState(state)) -> Nil {
+  case state.monitor {
+    Some(monitor) -> process.send(monitor, RuntimeStartupComplete)
+    None -> Nil
+  }
+}
+
+@internal
+pub fn start_runtime_monitor(
   pid: process.Pid,
   handlers: Handlers(state),
   initial_state: state,
@@ -725,6 +737,7 @@ fn start_runtime_monitor(
             user_state: initial_state,
             counter:,
             terminal: None,
+            startup_complete: False,
           ),
           selector,
         )
@@ -752,6 +765,8 @@ fn monitor_loop(
       monitor_loop(MonitorState(..state, user_state: user_state), selector)
     MonitorCommand(RuntimeTerminal(terminal)) ->
       monitor_loop(MonitorState(..state, terminal: Some(terminal)), selector)
+    MonitorCommand(RuntimeStartupComplete) ->
+      monitor_loop(MonitorState(..state, startup_complete: True), selector)
     RuntimeDown(down) -> handle_runtime_down(state, down)
   }
 }
@@ -771,6 +786,7 @@ fn handle_runtime_exit(
   case reason {
     process.Normal -> handle_terminal_callback(state)
     _ if state.terminal == Some(StartupFailureReported) -> Nil
+    _ if !state.startup_complete -> Nil
     process.Killed -> {
       let _ =
         state.handlers.on_error(

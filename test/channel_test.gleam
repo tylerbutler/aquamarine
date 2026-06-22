@@ -7,6 +7,7 @@ import aquamarine/channel
 import aquamarine/codec.{type Incoming}
 import aquamarine/error
 import aquamarine/phoenix
+import aquamarine/ref
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
@@ -197,6 +198,24 @@ pub fn connect_returns_channel_closed_when_on_joined_stops_test() {
   |> should.equal(Ok(Joined("stop")))
 
   channel_server.stop(server)
+}
+
+pub fn runtime_monitor_suppresses_startup_exit_callbacks_test() {
+  let events = process.new_subject()
+  let assert Ok(counter) = ref.start()
+  let pid = process.spawn_unlinked(process.sleep_forever)
+  let assert Ok(_) =
+    channel.start_runtime_monitor(
+      pid,
+      runtime_handlers(events),
+      RuntimeState(events: events, joined: False),
+      counter,
+    )
+
+  process.send_abnormal_exit(pid, "startup failed")
+
+  process.receive(events, 100)
+  |> should.equal(Error(Nil))
 }
 
 pub fn runtime_application_messages_use_updated_join_state_test() {

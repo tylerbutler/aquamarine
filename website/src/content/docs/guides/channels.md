@@ -14,7 +14,7 @@ it.
 | ----------- | ------------------------------------------------------------------ |
 | `connect`   | Starts the Stratus actor, joins the topic, waits for the join reply, and schedules the heartbeat. |
 | `push`      | Encodes an outbound event with a fresh ref and hands it to the transport. Does not wait for a reply. |
-| `close`     | Stops the heartbeat and ref actors, then closes the socket.        |
+| `close`     | Stops heartbeat timer state and the ref counter, then closes the socket. |
 
 ## Callback flow
 

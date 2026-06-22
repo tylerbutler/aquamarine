@@ -32,10 +32,10 @@ CI currently runs on OTP 28 and Gleam 1.16.0, then executes `gleam deps download
 - The package targets Erlang (`target = "erlang"` in `gleam.toml`); avoid introducing JavaScript-target-only APIs.
 - Preserve the codec boundary: protocol-specific frame formats and event names belong in codec adapters, while channel lifecycle and WebSocket behavior belong in `aquamarine/channel`.
 - Keep `Channel`, `ref.Counter`, `ref.Message`, `heartbeat.Heartbeat`, and `heartbeat.Message` opaque so callers cannot construct or depend on internal actor details.
-- `connect` must clean up partially started resources on every failure path. Existing helpers (`cleanup_connect`, `start_counter`, `send_join`, `await_join_reply_with_cleanup`) encode that pattern.
+- `connect` must clean up partially started resources on every failure path. Keep the existing `request_close`, `ref.stop`, monitored call, and startup-suppression pattern intact.
 - The callbacks own inbound flow. `push` and `close` are designed to be safe from other processes because they send through the socket actor.
 - Callback handlers should keep state via `continue` and end cleanly via `stop`.
-- Tests use Gleeunit. The suite entrypoint is `test/aquamarine_test.gleam`, and discovered test modules expose public functions such as `codec_tests`, `heartbeat_tests`, and `integration_tests`.
+- Tests use Gleeunit. The suite entrypoint is `test/aquamarine_test.gleam`, and discovered tests are public functions whose names end in `_test`.
 - Codec tests compare against `phoenix_channel_fixtures`; integration tests start a local Beryl server via Mist on a dynamically assigned port.
 - Prefer `assert`-style Gleeunit checks and straightforward grouping, matching the existing tests.
 
