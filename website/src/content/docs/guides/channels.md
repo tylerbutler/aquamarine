@@ -48,7 +48,9 @@ on the shared `Channel` handle.
 Do not call `push(channel, ...)` or `close(channel)` from inside a channel
 callback. The callback is already running in the channel actor, so those
 operations would have to wait on the actor that is currently executing them.
-Return `stop()` from a callback to close the channel from inside the callback.
+Return `stop()` from a callback when you want to terminate the local runtime
+from inside that callback. If you need the normal WebSocket close frame, call
+`close(channel)` from outside the callback.
 
 ## What `connect` actually waits for
 

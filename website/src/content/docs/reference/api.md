@@ -78,7 +78,8 @@ pub fn close(channel: Channel(state)) -> Result(Nil, AquamarineError)
 Ask the channel actor to send a normal close and stop. Already-queued actor
 messages may run first; once close is processed, the runtime stops its ref and
 heartbeat state and closes the transport. From inside a callback, return
-`stop()` instead.
+`stop()` only when local runtime termination is enough; call `close(channel)`
+from outside the callback when you need the normal close frame.
 
 ## `continue` and `stop`
 
