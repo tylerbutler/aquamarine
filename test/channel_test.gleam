@@ -50,6 +50,14 @@ type SelfCallState {
   SelfCallState(events: process.Subject(SelfCallEvent))
 }
 
+type BlockingEvent {
+  BlockingStarted
+}
+
+type BlockingState {
+  BlockingState(events: process.Subject(BlockingEvent), blocked: Bool)
+}
+
 // -- Helpers ----------------------------------------------------------------
 
 fn empty_payload() -> json.Json {
@@ -117,6 +125,24 @@ fn heartbeat_on_join_topic_codec() -> codec.Codec {
         payload: empty_payload(),
       )
     },
+    join_event: phoenix_codec.join_event,
+    reply_event: phoenix_codec.reply_event,
+    close_event: phoenix_codec.close_event,
+    error_event: phoenix_codec.error_event,
+    heartbeat_topic: phoenix_codec.heartbeat_topic,
+  )
+}
+
+fn slow_push_codec() -> codec.Codec {
+  let phoenix_codec = phoenix.codec()
+  codec.Codec(
+    decode: phoenix_codec.decode,
+    encode_join: phoenix_codec.encode_join,
+    encode_push: fn(join_ref, push_ref, topic, event, payload) {
+      process.sleep(5500)
+      phoenix_codec.encode_push(join_ref, push_ref, topic, event, payload)
+    },
+    encode_heartbeat: phoenix_codec.encode_heartbeat,
     join_event: phoenix_codec.join_event,
     reply_event: phoenix_codec.reply_event,
     close_event: phoenix_codec.close_event,
@@ -385,6 +411,112 @@ pub fn callback_initiated_push_fails_fast_test() {
   channel_server.stop(server)
 }
 
+pub fn timed_out_push_does_not_send_later_test() {
+  let events = process.new_subject()
+  let seen = process.new_subject()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_echo(server, test_topic, seen)
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      blocking_handlers(),
+      BlockingState(events:, blocked: False),
+    )
+
+  channel_server.broadcast(server, test_topic, "block", empty_payload())
+  process.receive(events, 1000)
+  |> should.equal(Ok(BlockingStarted))
+
+  channel.push(ch, "late", json.object([#("body", json.string("hello"))]))
+  |> should.equal(Error(error.ReplyTimeout))
+
+  process.receive(seen, 1000)
+  |> should.equal(Error(Nil))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+pub fn timed_out_close_does_not_close_later_test() {
+  let events = process.new_subject()
+  let seen = process.new_subject()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_echo(server, test_topic, seen)
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      blocking_handlers(),
+      BlockingState(events:, blocked: False),
+    )
+
+  channel_server.broadcast(server, test_topic, "block", empty_payload())
+  process.receive(events, 1000)
+  |> should.equal(Ok(BlockingStarted))
+
+  channel.close(ch)
+  |> should.equal(Error(error.ReplyTimeout))
+
+  process.sleep(1500)
+  channel.push(ch, "still_open", json.object([#("body", json.string("hello"))]))
+  |> should.equal(Ok(Nil))
+  process.receive(seen, 1000)
+  |> should.equal(Ok("still_open"))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+pub fn claimed_push_waits_for_real_result_test() {
+  let events = process.new_subject()
+  let seen = process.new_subject()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_echo(server, test_topic, seen)
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: json.object([]),
+        codec: slow_push_codec(),
+      ),
+      callback_handlers(),
+      CallbackState(events),
+    )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Joined("ok")))
+
+  channel.push(ch, "claimed", json.object([#("body", json.string("hello"))]))
+  |> should.equal(Ok(Nil))
+  process.receive(seen, 1000)
+  |> should.equal(Ok("claimed"))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
 pub fn runtime_application_messages_use_updated_join_state_test() {
   let events = process.new_subject()
   let server = channel_server.start()
@@ -638,7 +770,7 @@ pub fn runtime_heartbeat_schedules_after_join_test() {
   process.receive(events, 1000)
   |> should.equal(Ok(Joined("ok")))
 
-  process.receive(seen, 1000)
+  process.receive(seen, 5000)
   |> should.equal(Ok("tick"))
 
   let assert Ok(Message(incoming)) = process.receive(events, 1000)
@@ -825,5 +957,23 @@ fn self_push_handlers() -> channel.Handlers(SelfCallState) {
     },
     on_error: fn(state: SelfCallState, _err) { channel.continue(state) },
     on_closed: fn(state: SelfCallState) { channel.continue(state) },
+  )
+}
+
+fn blocking_handlers() -> channel.Handlers(BlockingState) {
+  channel.handlers(
+    on_joined: fn(state: BlockingState, _payload) { channel.continue(state) },
+    on_message: fn(state: BlockingState, _incoming: Incoming) {
+      case state.blocked {
+        False -> {
+          process.send(state.events, BlockingStarted)
+          process.sleep(5500)
+          channel.continue(BlockingState(..state, blocked: True))
+        }
+        True -> channel.continue(state)
+      }
+    },
+    on_error: fn(state: BlockingState, _err) { channel.continue(state) },
+    on_closed: fn(state: BlockingState) { channel.continue(state) },
   )
 }

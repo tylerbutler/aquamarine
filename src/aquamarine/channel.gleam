@@ -33,7 +33,12 @@ fn handle_push(
   event: String,
   payload: json.Json,
   reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+  cancel: CancelToken,
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
+  use <- bool.guard(when: !claim_cancel_token(cancel), return: {
+    stratus.continue(state)
+  })
+
   case state.join_state {
     Joined(join_ref) ->
       case ref.next(state.counter) {
@@ -217,6 +222,7 @@ type Command(state) {
     event: String,
     payload: json.Json,
     reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+    cancel: CancelToken,
   )
   SetSelfSubject(
     subject: process.Subject(stratus.InternalMessage(Command(state))),
@@ -224,8 +230,30 @@ type Command(state) {
     reply_to: process.Subject(Result(Nil, error.AquamarineError)),
   )
   Heartbeat
-  Close(reply_to: process.Subject(Result(Nil, error.AquamarineError)))
+  Close(
+    reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+    cancel: CancelToken,
+  )
   Shutdown
+}
+
+type CancelToken {
+  CancelToken(process.Subject(CancelMessage))
+}
+
+type CancelMessage {
+  Cancel(reply_to: process.Subject(CancelResult))
+  Claim(reply_to: process.Subject(Bool))
+}
+
+type CancelEvent {
+  CancelCommand(CancelMessage)
+  CancelCallerDown
+}
+
+type CancelResult {
+  Cancelled
+  AlreadyClaimed
 }
 
 pub fn continue(state: state) -> Next(state) {
@@ -316,7 +344,7 @@ fn do_connect(
         }
       })
       use _ <- result.try(
-        call_runtime(started.pid, started.data, fn(reply_to) {
+        call_runtime(started.pid, started.data, fn(reply_to, _cancel) {
           SetSelfSubject(
             subject: started.data,
             monitor: monitor,
@@ -418,7 +446,7 @@ fn close_callback_channel(
   pid: process.Pid,
   subject: process.Subject(stratus.InternalMessage(Command(state))),
 ) -> Result(Nil, error.AquamarineError) {
-  call_runtime(pid, subject, Close)
+  call_runtime(pid, subject, fn(reply_to, cancel) { Close(reply_to:, cancel:) })
 }
 
 fn push_callback_channel(
@@ -427,7 +455,9 @@ fn push_callback_channel(
   event: String,
   payload: json.Json,
 ) -> Result(Nil, error.AquamarineError) {
-  call_runtime(pid, subject, fn(reply_to) { Push(event:, payload:, reply_to:) })
+  call_runtime(pid, subject, fn(reply_to, cancel) {
+    Push(event:, payload:, reply_to:, cancel:)
+  })
 }
 
 fn call_start_join(
@@ -479,8 +509,10 @@ fn call_start_join(
 fn call_runtime(
   pid: process.Pid,
   subject: process.Subject(stratus.InternalMessage(Command(state))),
-  make_command: fn(process.Subject(Result(Nil, error.AquamarineError))) ->
-    Command(state),
+  make_command: fn(
+    process.Subject(Result(Nil, error.AquamarineError)),
+    CancelToken,
+  ) -> Command(state),
 ) -> Result(Nil, error.AquamarineError) {
   use <- bool.guard(when: process.self() == pid, return: {
     Error(error.InternalError(callback_self_call_message))
@@ -493,7 +525,8 @@ fn call_runtime(
   })
 
   let reply_to = process.new_subject()
-  make_command(reply_to)
+  let cancel = start_cancel_token()
+  make_command(reply_to, cancel)
   |> stratus.to_user_message
   |> process.send(subject, _)
 
@@ -501,15 +534,124 @@ fn call_runtime(
     process.new_selector()
     |> process.select(reply_to)
     |> process.select_specific_monitor(monitor, fn(_) {
+      let _ = cancel_token(cancel)
       Error(error.ChannelClosed)
     })
 
   let result = case process.selector_receive(selector, join_timeout_ms) {
-    Ok(result) -> result
-    Error(_) -> Error(error.ReplyTimeout)
+    Ok(result) -> {
+      let _ = cancel_token(cancel)
+      result
+    }
+    Error(_) -> {
+      case cancel_token(cancel) {
+        Cancelled -> Error(error.ReplyTimeout)
+        AlreadyClaimed -> await_claimed_runtime_reply(reply_to, monitor)
+      }
+    }
   }
   process.demonitor_process(monitor:)
   result
+}
+
+fn start_cancel_token() -> CancelToken {
+  let ready = process.new_subject()
+  let caller = process.self()
+  process.spawn_unlinked(fn() {
+    let subject = process.new_subject()
+    let caller_monitor = process.monitor(caller)
+    process.send(ready, subject)
+    cancel_token_loop(subject, caller_monitor, claimed: False)
+  })
+  let subject = process.receive_forever(ready)
+  CancelToken(subject)
+}
+
+fn cancel_token_loop(
+  subject: process.Subject(CancelMessage),
+  caller_monitor: process.Monitor,
+  claimed claimed: Bool,
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select_map(subject, CancelCommand)
+    |> process.select_specific_monitor(caller_monitor, fn(_) {
+      CancelCallerDown
+    })
+
+  case process.selector_receive_forever(selector) {
+    CancelCommand(Claim(reply_to)) -> {
+      process.send(reply_to, !claimed)
+      cancel_token_loop(subject, caller_monitor, claimed: True)
+    }
+    CancelCommand(Cancel(reply_to)) -> {
+      process.send(reply_to, case claimed {
+        True -> AlreadyClaimed
+        False -> Cancelled
+      })
+      process.demonitor_process(monitor: caller_monitor)
+      Nil
+    }
+    CancelCallerDown -> Nil
+  }
+}
+
+fn cancel_token(token: CancelToken) -> CancelResult {
+  let CancelToken(subject) = token
+  case process.subject_owner(subject) {
+    Ok(pid) ->
+      case process.is_alive(pid) {
+        True -> {
+          let monitor = process.monitor(pid)
+          let reply_to = process.new_subject()
+          process.send(subject, Cancel(reply_to))
+          let result =
+            process.new_selector()
+            |> process.select(reply_to)
+            |> process.select_specific_monitor(monitor, fn(_) { Cancelled })
+            |> process.selector_receive_forever
+          process.demonitor_process(monitor:)
+          result
+        }
+        False -> Cancelled
+      }
+    _ -> Cancelled
+  }
+}
+
+fn claim_cancel_token(token: CancelToken) -> Bool {
+  let CancelToken(subject) = token
+  case process.subject_owner(subject) {
+    Ok(pid) ->
+      case process.is_alive(pid) {
+        True -> {
+          let monitor = process.monitor(pid)
+          let reply_to = process.new_subject()
+          process.send(subject, Claim(reply_to))
+          let result =
+            process.new_selector()
+            |> process.select(reply_to)
+            |> process.select_specific_monitor(monitor, fn(_) { False })
+            |> process.selector_receive_forever
+          process.demonitor_process(monitor:)
+          result
+        }
+        False -> False
+      }
+    _ -> False
+  }
+}
+
+fn await_claimed_runtime_reply(
+  reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+  monitor: process.Monitor,
+) -> Result(Nil, error.AquamarineError) {
+  process.new_selector()
+  |> process.select(reply_to)
+  |> process.select_specific_monitor(monitor, fn(_) {
+    Error(error.ChannelClosed)
+  })
+  |> process.selector_receive_forever
 }
 
 fn loop(
@@ -532,11 +674,14 @@ fn loop(
     }
     stratus.Text(text) -> handle_text(state, conn, text)
     stratus.Binary(_) -> stratus.continue(state)
-    stratus.User(Push(event:, payload:, reply_to:)) ->
-      handle_push(state, conn, event, payload, reply_to)
+    stratus.User(Push(event:, payload:, reply_to:, cancel:)) ->
+      handle_push(state, conn, event, payload, reply_to, cancel)
     stratus.User(Heartbeat) -> handle_heartbeat(state, conn)
-    stratus.User(Close(reply_to)) -> {
+    stratus.User(Close(reply_to:, cancel:)) -> {
       let closing_state = RuntimeState(..state, join_state: Closing)
+      use <- bool.guard(when: !claim_cancel_token(cancel), return: {
+        stratus.continue(state)
+      })
       let result =
         stratus.close(conn, because: stratus.Normal(<<>>))
         |> result.map_error(fn(reason) {
