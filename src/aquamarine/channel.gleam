@@ -14,7 +14,7 @@ import gleam/erlang/process
 import gleam/http/request
 import gleam/int
 import gleam/json
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -85,6 +85,56 @@ fn handle_push(
   }
 }
 
+fn handle_heartbeat(
+  state: RuntimeState(state),
+  conn: stratus.Connection,
+) -> stratus.Next(RuntimeState(state), Command(state)) {
+  case state.join_state {
+    Joined(_) ->
+      case ref.next(state.counter) {
+        Ok(ref_value) -> {
+          let result =
+            stratus.send_text_message(
+              conn,
+              state.config.codec.encode_heartbeat(ref_value),
+            )
+          case result {
+            Ok(Nil) -> {
+              case state.self_subject {
+                Some(subject) -> {
+                  let _ =
+                    process.send_after(
+                      subject,
+                      state.heartbeat_ms,
+                      stratus.to_user_message(Heartbeat),
+                    )
+                  stratus.continue(state)
+                }
+                None -> stratus.continue(state)
+              }
+            }
+            Error(reason) -> {
+              let next =
+                state.handlers.on_error(
+                  state.user_state,
+                  error.Transport(
+                    error.SocketSendFailed(string.inspect(reason)),
+                  ),
+                )
+              apply_next(state, next)
+            }
+          }
+        }
+        Error(_) -> {
+          let next =
+            state.handlers.on_error(state.user_state, error.ChannelClosed)
+          apply_next(state, next)
+        }
+      }
+    _ -> stratus.continue(state)
+  }
+}
+
 pub type Handlers(state) {
   Handlers(
     on_joined: fn(state, Dynamic) -> Next(state),
@@ -133,7 +183,9 @@ type RuntimeState(state) {
     handlers: Handlers(state),
     user_state: state,
     counter: ref.Counter,
-    heartbeat_subject: process.Subject(Command(state)),
+    self_subject: option.Option(
+      process.Subject(stratus.InternalMessage(Command(state))),
+    ),
     join_state: JoinState,
     heartbeat_ms: Int,
   )
@@ -144,6 +196,10 @@ type Command(state) {
   Push(
     event: String,
     payload: json.Json,
+    reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+  )
+  SetSelfSubject(
+    subject: process.Subject(stratus.InternalMessage(Command(state))),
     reply_to: process.Subject(Result(Nil, error.AquamarineError)),
   )
   Heartbeat
@@ -183,29 +239,41 @@ pub fn connect(
   handlers: Handlers(state),
   initial_state: state,
 ) -> Result(Channel(state), error.AquamarineError) {
+  do_connect(config, handlers, initial_state, default_heartbeat_ms)
+}
+
+@internal
+pub fn connect_with_heartbeat(
+  config: Config,
+  handlers: Handlers(state),
+  initial_state: state,
+  heartbeat_ms: Int,
+) -> Result(Channel(state), error.AquamarineError) {
+  do_connect(config, handlers, initial_state, heartbeat_ms)
+}
+
+fn do_connect(
+  config: Config,
+  handlers: Handlers(state),
+  initial_state: state,
+  heartbeat_ms: Int,
+) -> Result(Channel(state), error.AquamarineError) {
   use req <- result.try(request(config))
   use counter <- result.try(start_counter())
 
-  let heartbeat_subject = process.new_subject()
-  let runtime =
-    RuntimeState(
-      config: config,
-      handlers: handlers,
-      user_state: initial_state,
-      counter: counter,
-      heartbeat_subject: heartbeat_subject,
-      join_state: NotJoined,
-      heartbeat_ms: default_heartbeat_ms,
-    )
-
-  let selector =
-    process.new_selector()
-    |> process.select(heartbeat_subject)
-
   let builder =
     stratus.new_with_initialiser(request: req, init: fn() {
+      let runtime =
+        RuntimeState(
+          config: config,
+          handlers: handlers,
+          user_state: initial_state,
+          counter: counter,
+          self_subject: None,
+          join_state: NotJoined,
+          heartbeat_ms: heartbeat_ms,
+        )
       stratus.initialised(runtime)
-      |> stratus.selecting(selector)
       |> Ok
     })
     |> stratus.on_message(loop)
@@ -213,6 +281,19 @@ pub fn connect(
 
   case stratus.start(builder) {
     Ok(started) -> {
+      let self_reply = process.new_subject()
+      SetSelfSubject(subject: started.data, reply_to: self_reply)
+      |> stratus.to_user_message
+      |> process.send(started.data, _)
+
+      use _ <- result.try(case process.receive(self_reply, join_timeout_ms) {
+        Ok(Ok(Nil)) -> Ok(Nil)
+        _ -> {
+          let _ = request_close(started.data)
+          Error(error.ReplyTimeout)
+        }
+      })
+
       let reply_to = process.new_subject()
       StartJoin(reply_to)
       |> stratus.to_user_message
@@ -397,11 +478,16 @@ fn loop(
 ) -> stratus.Next(RuntimeState(state), Command(state)) {
   case msg {
     stratus.User(StartJoin(reply_to)) -> start_join(state, conn, reply_to)
+    stratus.User(SetSelfSubject(subject:, reply_to:)) -> {
+      let state = RuntimeState(..state, self_subject: Some(subject))
+      process.send(reply_to, Ok(Nil))
+      stratus.continue(state)
+    }
     stratus.Text(text) -> handle_text(state, conn, text)
     stratus.Binary(_) -> stratus.continue(state)
     stratus.User(Push(event:, payload:, reply_to:)) ->
       handle_push(state, conn, event, payload, reply_to)
-    stratus.User(Heartbeat) -> stratus.continue(state)
+    stratus.User(Heartbeat) -> handle_heartbeat(state, conn)
     stratus.User(Close(reply_to)) -> {
       ref.stop(state.counter)
       let result =
@@ -517,6 +603,18 @@ fn complete_join(
                   user_state: user_state,
                   join_state: Joined(join_ref),
                 )
+              case state.self_subject {
+                Some(subject) -> {
+                  let _ =
+                    process.send_after(
+                      subject,
+                      state.heartbeat_ms,
+                      stratus.to_user_message(Heartbeat),
+                    )
+                  Nil
+                }
+                None -> Nil
+              }
               process.send(reply_to, Ok(Nil))
               stratus.continue(joined_state)
             }

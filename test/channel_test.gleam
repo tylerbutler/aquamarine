@@ -156,6 +156,31 @@ fn decode_fails_on_boom_codec() -> codec.Codec {
   )
 }
 
+fn heartbeat_on_join_topic_codec() -> codec.Codec {
+  let phoenix_codec = phoenix.codec()
+  codec.Codec(
+    decode: phoenix_codec.decode,
+    encode_join: phoenix_codec.encode_join,
+    encode_push: phoenix_codec.encode_push,
+    encode_heartbeat: fn(ref) {
+      roost_frame.encode(
+        join_ref: Some(ref),
+        ref: Some(ref),
+        topic: test_topic,
+        // Beryl reserves the literal `heartbeat` event, so use a normal
+        // channel event name here to verify the timer actually fires.
+        event: "tick",
+        payload: empty_payload(),
+      )
+    },
+    join_event: phoenix_codec.join_event,
+    reply_event: phoenix_codec.reply_event,
+    close_event: phoenix_codec.close_event,
+    error_event: phoenix_codec.error_event,
+    heartbeat_topic: phoenix_codec.heartbeat_topic,
+  )
+}
+
 // -- Tests ------------------------------------------------------------------
 
 pub fn connect_waits_for_join_and_calls_on_joined_test() {
@@ -685,7 +710,11 @@ pub fn channel_tests_test() {
 pub fn runtime_application_messages_use_updated_join_state_test() {
   let events = process.new_subject()
   let server = channel_server.start(47_899)
-  channel_server.register_ok(server, test_topic, empty_payload())
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
 
   let assert Ok(ch) =
     channel.connect(
@@ -720,7 +749,11 @@ pub fn runtime_application_messages_use_updated_join_state_test() {
 pub fn runtime_close_event_calls_on_closed_test() {
   let events = process.new_subject()
   let server = channel_server.start(47_900)
-  channel_server.register_ok(server, test_topic, empty_payload())
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
 
   let assert Ok(ch) =
     channel.connect(
@@ -754,7 +787,11 @@ pub fn runtime_close_event_calls_on_closed_test() {
 pub fn runtime_error_event_calls_on_error_test() {
   let events = process.new_subject()
   let server = channel_server.start(47_901)
-  channel_server.register_ok(server, test_topic, empty_payload())
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
 
   let assert Ok(ch) =
     channel.connect(
@@ -850,6 +887,42 @@ pub fn runtime_heartbeat_replies_are_swallowed_test() {
 
   process.receive(events, 1000)
   |> should.equal(Ok(RuntimeMessage(True, "after_hb")))
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+pub fn runtime_heartbeat_schedules_after_join_test() {
+  let events = process.new_subject()
+  let seen = process.new_subject()
+  let server = channel_server.start(47_905)
+  channel_server.register_echo(server, test_topic, seen)
+
+  let assert Ok(ch) =
+    channel.connect_with_heartbeat(
+      channel.config(
+        host: "127.0.0.1",
+        port: 47_905,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: empty_payload(),
+        codec: heartbeat_on_join_topic_codec(),
+      ),
+      callback_handlers(),
+      CallbackState(events),
+      20,
+    )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(Joined("ok")))
+
+  process.receive(seen, 1000)
+  |> should.equal(Ok("tick"))
+
+  let assert Ok(Message(incoming)) = process.receive(events, 1000)
+  incoming.event |> should.equal(phoenix.codec().reply_event)
+  incoming.topic |> should.equal(test_topic)
+  incoming.ref |> should.equal(Some("2"))
 
   let assert Ok(Nil) = channel.close(ch)
   channel_server.stop(server)
