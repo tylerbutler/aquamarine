@@ -66,7 +66,8 @@ pub fn push(
 ```
 
 Encode `event` and `payload` with a fresh ref and hand the frame to the
-transport. Does **not** wait for a reply.
+transport. Does **not** wait for a reply. Do not call this from inside one of
+the channel's own callbacks.
 
 ## `close`
 
@@ -76,7 +77,8 @@ pub fn close(channel: Channel(state)) -> Result(Nil, AquamarineError)
 
 Ask the channel actor to send a normal close and stop. Already-queued actor
 messages may run first; once close is processed, the runtime stops its ref and
-heartbeat state and closes the transport.
+heartbeat state and closes the transport. From inside a callback, return
+`stop()` instead.
 
 ## `continue` and `stop`
 

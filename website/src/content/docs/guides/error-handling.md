@@ -71,8 +71,9 @@ correlate replies to pushes for you (see
 ### `InternalError(reason)`
 
 Returned when Aquamarine itself cannot start or manage an internal actor,
-such as the ref counter. This is usually a setup or runtime failure inside
-the library rather than a problem with your server.
+such as the ref counter, or when a channel operation is called from inside
+that channel's own callback. This is usually a setup or runtime failure
+inside the library rather than a problem with your server.
 
 ## A complete handler
 

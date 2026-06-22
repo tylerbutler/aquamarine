@@ -40,6 +40,16 @@ type RuntimeState {
   RuntimeState(events: process.Subject(RuntimeEvent), joined: Bool)
 }
 
+type SelfCallEvent {
+  NeedChannel(process.Subject(channel.Channel(SelfCallState)))
+  SelfCloseResult(Result(Nil, error.AquamarineError))
+  SelfPushResult(Result(Nil, error.AquamarineError))
+}
+
+type SelfCallState {
+  SelfCallState(events: process.Subject(SelfCallEvent))
+}
+
 // -- Helpers ----------------------------------------------------------------
 
 fn empty_payload() -> json.Json {
@@ -170,7 +180,7 @@ pub fn connect_surfaces_join_rejection_test() {
   channel_server.stop(server)
 }
 
-pub fn connect_returns_channel_closed_when_on_joined_stops_test() {
+pub fn connect_returns_channel_before_stopping_on_joined_test() {
   let events = process.new_subject()
   let server = channel_server.start()
   let port = channel_server.port(server)
@@ -180,23 +190,58 @@ pub fn connect_returns_channel_closed_when_on_joined_stops_test() {
     json.object([#("welcome", json.string("stop"))]),
   )
 
-  channel.connect(
-    channel.config(
-      host: "127.0.0.1",
-      port: port,
-      path: "/socket/websocket",
-      topic: test_topic,
-      payload: json.object([]),
-      codec: phoenix.codec(),
-    ),
-    stopping_handlers(),
-    CallbackState(events),
-  )
-  |> should.equal(Error(error.ChannelClosed))
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      stopping_handlers(),
+      CallbackState(events),
+    )
 
   process.receive(events, 1000)
   |> should.equal(Ok(Joined("stop")))
 
+  channel.close(ch)
+  |> should.equal(Error(error.ChannelClosed))
+
+  channel_server.stop(server)
+}
+
+pub fn connect_does_not_time_out_on_slow_on_joined_test() {
+  let events = process.new_subject()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
+
+  let result =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      slow_joined_handlers(),
+      CallbackState(events),
+    )
+
+  let assert Ok(ch) = result
+  process.receive(events, 7000)
+  |> should.equal(Ok(Joined("ok")))
+
+  let assert Ok(Nil) = channel.close(ch)
   channel_server.stop(server)
 }
 
@@ -216,6 +261,102 @@ pub fn runtime_monitor_suppresses_startup_exit_callbacks_test() {
 
   process.receive(events, 100)
   |> should.equal(Error(Nil))
+}
+
+pub fn callback_initiated_close_fails_fast_test() {
+  let events = process.new_subject()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      self_close_handlers(),
+      SelfCallState(events:),
+    )
+
+  channel_server.broadcast(
+    server,
+    test_topic,
+    "close_from_callback",
+    empty_payload(),
+  )
+  let assert Ok(NeedChannel(channel_ref)) = process.receive(events, 1000)
+  process.send(channel_ref, ch)
+
+  process.receive(events, 6000)
+  |> should.equal(
+    Ok(
+      SelfCloseResult(
+        Error(error.InternalError(
+          "channel operations cannot be called from channel callbacks",
+        )),
+      ),
+    ),
+  )
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
+}
+
+pub fn callback_initiated_push_fails_fast_test() {
+  let events = process.new_subject()
+  let server = channel_server.start()
+  let port = channel_server.port(server)
+  channel_server.register_ok(
+    server,
+    test_topic,
+    json.object([#("welcome", json.string("ok"))]),
+  )
+
+  let assert Ok(ch) =
+    channel.connect(
+      channel.config(
+        host: "127.0.0.1",
+        port: port,
+        path: "/socket/websocket",
+        topic: test_topic,
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      self_push_handlers(),
+      SelfCallState(events:),
+    )
+
+  channel_server.broadcast(
+    server,
+    test_topic,
+    "push_from_callback",
+    empty_payload(),
+  )
+  let assert Ok(NeedChannel(channel_ref)) = process.receive(events, 1000)
+  process.send(channel_ref, ch)
+
+  process.receive(events, 6000)
+  |> should.equal(
+    Ok(
+      SelfPushResult(
+        Error(error.InternalError(
+          "channel operations cannot be called from channel callbacks",
+        )),
+      ),
+    ),
+  )
+
+  let assert Ok(Nil) = channel.close(ch)
+  channel_server.stop(server)
 }
 
 pub fn runtime_application_messages_use_updated_join_state_test() {
@@ -575,6 +716,33 @@ fn callback_handlers() -> channel.Handlers(CallbackState) {
   )
 }
 
+fn slow_joined_handlers() -> channel.Handlers(CallbackState) {
+  channel.handlers(
+    on_joined: fn(state: CallbackState, payload) {
+      process.sleep(5500)
+      let decoder = {
+        use welcome <- decode.field("welcome", decode.string)
+        decode.success(welcome)
+      }
+      let assert Ok(value) = decode.run(payload, decoder)
+      process.send(state.events, Joined(value))
+      channel.continue(state)
+    },
+    on_message: fn(state: CallbackState, incoming: Incoming) {
+      process.send(state.events, Message(incoming))
+      channel.continue(state)
+    },
+    on_error: fn(state: CallbackState, err) {
+      process.send(state.events, ErrorSeen(err))
+      channel.continue(state)
+    },
+    on_closed: fn(state: CallbackState) {
+      process.send(state.events, Closed)
+      channel.continue(state)
+    },
+  )
+}
+
 fn stopping_handlers() -> channel.Handlers(CallbackState) {
   channel.handlers(
     on_joined: fn(state: CallbackState, payload) {
@@ -598,5 +766,38 @@ fn stopping_handlers() -> channel.Handlers(CallbackState) {
       process.send(state.events, Closed)
       channel.continue(state)
     },
+  )
+}
+
+fn self_close_handlers() -> channel.Handlers(SelfCallState) {
+  channel.handlers(
+    on_joined: fn(state: SelfCallState, _payload) { channel.continue(state) },
+    on_message: fn(state: SelfCallState, _incoming: Incoming) {
+      let channel_ref = process.new_subject()
+      process.send(state.events, NeedChannel(channel_ref))
+      let assert Ok(ch) = process.receive(channel_ref, 1000)
+      process.send(state.events, SelfCloseResult(channel.close(ch)))
+      channel.continue(state)
+    },
+    on_error: fn(state: SelfCallState, _err) { channel.continue(state) },
+    on_closed: fn(state: SelfCallState) { channel.continue(state) },
+  )
+}
+
+fn self_push_handlers() -> channel.Handlers(SelfCallState) {
+  channel.handlers(
+    on_joined: fn(state: SelfCallState, _payload) { channel.continue(state) },
+    on_message: fn(state: SelfCallState, _incoming: Incoming) {
+      let channel_ref = process.new_subject()
+      process.send(state.events, NeedChannel(channel_ref))
+      let assert Ok(ch) = process.receive(channel_ref, 1000)
+      process.send(
+        state.events,
+        SelfPushResult(channel.push(ch, "from_callback", empty_payload())),
+      )
+      channel.continue(state)
+    },
+    on_error: fn(state: SelfCallState, _err) { channel.continue(state) },
+    on_closed: fn(state: SelfCallState) { channel.continue(state) },
   )
 }

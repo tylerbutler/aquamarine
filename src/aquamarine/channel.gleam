@@ -145,6 +145,8 @@ const default_heartbeat_ms: Int = 30_000
 
 const join_timeout_ms: Int = 5000
 
+const callback_self_call_message: String = "channel operations cannot be called from channel callbacks"
+
 pub opaque type Channel(state) {
   CallbackChannel(
     pid: process.Pid,
@@ -429,6 +431,10 @@ fn call_runtime(
   make_command: fn(process.Subject(Result(Nil, error.AquamarineError))) ->
     Command(state),
 ) -> Result(Nil, error.AquamarineError) {
+  use <- bool.guard(when: process.self() == pid, return: {
+    Error(error.InternalError(callback_self_call_message))
+  })
+
   let monitor = process.monitor(pid)
   use <- bool.guard(when: !process.is_alive(pid), return: {
     process.demonitor_process(monitor:)
@@ -589,30 +595,27 @@ fn complete_join(
     Ok("ok") ->
       case decode_reply_response(incoming.payload) {
         Ok(reply) -> {
+          let joined_state = RuntimeState(..state, join_state: Joined(join_ref))
+          case state.self_subject {
+            Some(subject) -> {
+              let _ =
+                process.send_after(
+                  subject,
+                  state.heartbeat_ms,
+                  stratus.to_user_message(Heartbeat),
+                )
+              Nil
+            }
+            None -> Nil
+          }
+          notify_startup_complete(joined_state)
+          process.send(reply_to, Ok(Nil))
           let next = state.handlers.on_joined(state.user_state, reply)
           case next {
             Continue(user_state) -> {
-              let joined_state =
-                RuntimeState(..state, join_state: Joined(join_ref))
-                |> set_user_state(user_state)
-              case state.self_subject {
-                Some(subject) -> {
-                  let _ =
-                    process.send_after(
-                      subject,
-                      state.heartbeat_ms,
-                      stratus.to_user_message(Heartbeat),
-                    )
-                  Nil
-                }
-                None -> Nil
-              }
-              notify_startup_complete(joined_state)
-              process.send(reply_to, Ok(Nil))
-              stratus.continue(joined_state)
+              stratus.continue(set_user_state(joined_state, user_state))
             }
             Stop -> {
-              process.send(reply_to, Error(error.ChannelClosed))
               ref.stop(state.counter)
               stratus.stop()
             }

@@ -45,6 +45,11 @@ A common pattern is to call `connect` from a per-channel actor, keep state
 in the callbacks, and let other parts of your app call `push` or `close`
 on the shared `Channel` handle.
 
+Do not call `push(channel, ...)` or `close(channel)` from inside a channel
+callback. The callback is already running in the channel actor, so those
+operations would have to wait on the actor that is currently executing them.
+Return `stop()` from a callback to close the channel from inside the callback.
+
 ## What `connect` actually waits for
 
 `connect` is synchronous. It returns once **all** of the following have
@@ -86,11 +91,12 @@ yourself.
 ## Closing cleanly
 
 `close` asks the actor to send a normal close and stop. It does not call your
-`on_closed` callback. If the actor is already gone or does not reply in time,
-`close` returns `ChannelClosed`, `ReplyTimeout`, or the appropriate error from
-the underlying transport. Close is serialized through the channel actor, so any
-already-queued heartbeat tick may run first; once close is processed, the
-runtime stops its ref and heartbeat state.
+`on_closed` callback. If the actor is already gone, called from inside a
+callback, or does not reply in time, `close` returns `ChannelClosed`,
+`InternalError`, `ReplyTimeout`, or the appropriate error from the underlying
+transport. Close is serialized through the channel actor, so any already-queued
+heartbeat tick may run first; once close is processed, the runtime stops its ref
+and heartbeat state.
 
 ## Related
 
