@@ -11,16 +11,6 @@ import gleam/json
 import gleeunit/should
 import support/channel_server
 
-const join_callback_port: Int = 48_095
-
-const server_push_port: Int = 48_096
-
-const client_push_port: Int = 48_097
-
-const rejected_port: Int = 48_098
-
-const transport_error_port: Int = 48_099
-
 const test_path: String = "/socket/websocket"
 
 const unused_port: Int = 48_100
@@ -38,7 +28,8 @@ type IntegrationState {
 
 pub fn integration_join_callback_test() {
   let events = process.new_subject()
-  let server = channel_server.start(join_callback_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_ok(
     server,
     "test:lobby",
@@ -49,7 +40,7 @@ pub fn integration_join_callback_test() {
     aquamarine.connect(
       aquamarine.config(
         host: "127.0.0.1",
-        port: join_callback_port,
+        port: port,
         path: test_path,
         topic: "test:lobby",
         payload: json.object([]),
@@ -68,7 +59,8 @@ pub fn integration_join_callback_test() {
 
 pub fn integration_server_push_callback_test() {
   let events = process.new_subject()
-  let server = channel_server.start(server_push_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_ok(
     server,
     "test:lobby",
@@ -79,7 +71,7 @@ pub fn integration_server_push_callback_test() {
     aquamarine.connect(
       aquamarine.config(
         host: "127.0.0.1",
-        port: server_push_port,
+        port: port,
         path: test_path,
         topic: "test:lobby",
         payload: json.object([]),
@@ -117,14 +109,15 @@ pub fn integration_server_push_callback_test() {
 pub fn integration_client_push_reply_callback_test() {
   let events = process.new_subject()
   let seen = process.new_subject()
-  let server = channel_server.start(client_push_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_echo(server, "test:echo", seen)
 
   let assert Ok(ch) =
     aquamarine.connect(
       aquamarine.config(
         host: "127.0.0.1",
-        port: client_push_port,
+        port: port,
         path: test_path,
         topic: "test:echo",
         payload: json.object([]),
@@ -147,18 +140,35 @@ pub fn integration_client_push_reply_callback_test() {
   incoming.event |> should.equal(phoenix.codec().reply_event)
   incoming.topic |> should.equal("test:echo")
 
+  let reply_decoder = {
+    use status <- decode.field("status", decode.string)
+    use response <- decode.field("response", decode.dynamic)
+    decode.success(#(status, response))
+  }
+  let assert Ok(#(status, response)) =
+    decode.run(incoming.payload, reply_decoder)
+  status |> should.equal("ok")
+
+  let response_decoder = {
+    use body <- decode.field("body", decode.string)
+    decode.success(body)
+  }
+  decode.run(response, response_decoder)
+  |> should.equal(Ok("hello"))
+
   let assert Ok(Nil) = aquamarine.close(ch)
   channel_server.stop(server)
 }
 
 pub fn integration_join_rejection_test() {
-  let server = channel_server.start(rejected_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_rejected(server, "test:rejected")
 
   aquamarine.connect(
     aquamarine.config(
       host: "127.0.0.1",
-      port: rejected_port,
+      port: port,
       path: test_path,
       topic: "test:rejected",
       payload: json.object([]),
@@ -173,13 +183,14 @@ pub fn integration_join_rejection_test() {
 }
 
 pub fn integration_startup_transport_errors_test() {
-  let server = channel_server.start(transport_error_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
 
   case
     aquamarine.connect(
       aquamarine.config(
         host: "127.0.0.1",
-        port: transport_error_port,
+        port: port,
         path: "/wrong",
         topic: "test:lobby",
         payload: json.object([]),

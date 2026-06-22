@@ -3,6 +3,7 @@ import beryl/channel as bchannel
 import beryl/transport/mist as mist_transport
 import beryl/wire
 import gleam/bytes_tree
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http/response
 import gleam/json
@@ -10,11 +11,12 @@ import gleam/option.{Some}
 import mist
 
 pub opaque type Server {
-  Server(channels: beryl.Channels)
+  Server(channels: beryl.Channels, pid: process.Pid, port: Int)
 }
 
-pub fn start(port: Int) -> Server {
+pub fn start() -> Server {
   let assert Ok(channels) = beryl.start(beryl.config(wire.phoenix_codec()))
+  let port_subject = process.new_subject()
 
   let handler = fn(req) {
     mist_transport.upgrade(
@@ -30,11 +32,19 @@ pub fn start(port: Int) -> Server {
 
   let assert Ok(server) =
     mist.new(handler)
-    |> mist.port(port)
+    |> mist.port(0)
+    |> mist.bind("127.0.0.1")
+    |> mist.after_start(fn(port, _scheme, _ip_address) {
+      process.send(port_subject, port)
+    })
     |> mist.start
 
-  let _ = server
-  Server(channels:)
+  let assert Ok(port) = process.receive(port_subject, 1000)
+  Server(channels: channels, pid: server.pid, port: port)
+}
+
+pub fn port(server: Server) -> Int {
+  server.port
 }
 
 pub fn register_ok(server: Server, topic: String, reply: json.Json) -> Nil {
@@ -69,9 +79,17 @@ pub fn register_echo(
         socket: sock,
       )
     })
-    |> bchannel.with_handle_in(fn(event, _payload, sock) {
+    |> bchannel.with_handle_in(fn(event, payload, sock) {
       process.send(seen, event)
-      bchannel.Reply(event: "reply", payload: json.object([]), socket: sock)
+      let body_decoder = {
+        use body <- decode.field("body", decode.string)
+        decode.success(body)
+      }
+      let reply_payload = case decode.run(payload, body_decoder) {
+        Ok(body) -> json.object([#("body", json.string(body))])
+        Error(_) -> json.object([])
+      }
+      bchannel.Reply(event: "reply", payload: reply_payload, socket: sock)
     })
 
   let assert Ok(_) = beryl.register(server.channels, topic, channel)

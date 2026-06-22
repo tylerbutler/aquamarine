@@ -25,20 +25,6 @@ const no_heartbeat: Int = 86_400_000
 
 const test_topic: String = "test:lobby"
 
-const join_test_port: Int = 47_893
-
-const rejected_test_port: Int = 47_894
-
-const stop_test_port: Int = 47_897
-
-const callback_receive_test_port: Int = 47_898
-
-const callback_push_test_port: Int = 47_904
-
-const close_push_test_port: Int = 47_906
-
-const close_self_close_test_port: Int = 47_907
-
 type TestEvent {
   Joined(String)
   Message(Incoming)
@@ -189,7 +175,8 @@ fn heartbeat_on_join_topic_codec() -> codec.Codec {
 
 pub fn connect_waits_for_join_and_calls_on_joined_test() {
   let events = process.new_subject()
-  let server = channel_server.start(callback_receive_test_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_ok(
     server,
     test_topic,
@@ -200,7 +187,7 @@ pub fn connect_waits_for_join_and_calls_on_joined_test() {
     channel.connect(
       channel.config(
         host: "127.0.0.1",
-        port: callback_receive_test_port,
+        port: port,
         path: "/socket/websocket",
         topic: test_topic,
         payload: json.object([]),
@@ -218,13 +205,14 @@ pub fn connect_waits_for_join_and_calls_on_joined_test() {
 }
 
 pub fn connect_surfaces_join_rejection_test() {
-  let server = channel_server.start(rejected_test_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_rejected(server, test_topic)
 
   channel.connect(
     channel.config(
       host: "127.0.0.1",
-      port: rejected_test_port,
+      port: port,
       path: "/socket/websocket",
       topic: test_topic,
       payload: json.object([]),
@@ -240,7 +228,8 @@ pub fn connect_surfaces_join_rejection_test() {
 
 pub fn connect_returns_channel_closed_when_on_joined_stops_test() {
   let events = process.new_subject()
-  let server = channel_server.start(stop_test_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_ok(
     server,
     test_topic,
@@ -250,7 +239,7 @@ pub fn connect_returns_channel_closed_when_on_joined_stops_test() {
   channel.connect(
     channel.config(
       host: "127.0.0.1",
-      port: stop_test_port,
+      port: port,
       path: "/socket/websocket",
       topic: test_topic,
       payload: json.object([]),
@@ -461,14 +450,15 @@ pub fn channel_tests_test() {
   // channel.push: reaches the server and delivers its reply to callbacks
   let events = process.new_subject()
   let seen = process.new_subject()
-  let server = channel_server.start(callback_push_test_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_echo(server, test_topic, seen)
 
   let assert Ok(ch) =
     channel.connect(
       channel.config(
         host: "127.0.0.1",
-        port: callback_push_test_port,
+        port: port,
         path: "/socket/websocket",
         topic: test_topic,
         payload: empty_payload(),
@@ -629,7 +619,8 @@ pub fn channel_tests_test() {
 
   // channel.receive: returns ChannelClosed for callback channels
   let events = process.new_subject()
-  let server = channel_server.start(join_test_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_ok(
     server,
     test_topic,
@@ -640,7 +631,7 @@ pub fn channel_tests_test() {
     channel.connect(
       channel.config(
         host: "127.0.0.1",
-        port: join_test_port,
+        port: port,
         path: "/socket/websocket",
         topic: test_topic,
         payload: json.object([]),
@@ -713,7 +704,8 @@ pub fn channel_tests_test() {
 
 pub fn runtime_application_messages_use_updated_join_state_test() {
   let events = process.new_subject()
-  let server = channel_server.start(47_899)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_ok(
     server,
     test_topic,
@@ -724,7 +716,7 @@ pub fn runtime_application_messages_use_updated_join_state_test() {
     channel.connect(
       channel.config(
         host: "127.0.0.1",
-        port: 47_899,
+        port: port,
         path: "/socket/websocket",
         topic: test_topic,
         payload: empty_payload(),
@@ -752,7 +744,8 @@ pub fn runtime_application_messages_use_updated_join_state_test() {
 
 pub fn runtime_close_event_calls_on_closed_test() {
   let events = process.new_subject()
-  let server = channel_server.start(47_900)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_ok(
     server,
     test_topic,
@@ -763,7 +756,7 @@ pub fn runtime_close_event_calls_on_closed_test() {
     channel.connect(
       channel.config(
         host: "127.0.0.1",
-        port: 47_900,
+        port: port,
         path: "/socket/websocket",
         topic: test_topic,
         payload: empty_payload(),
@@ -790,7 +783,8 @@ pub fn runtime_close_event_calls_on_closed_test() {
 
 pub fn runtime_error_event_calls_on_error_test() {
   let events = process.new_subject()
-  let server = channel_server.start(47_901)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_ok(
     server,
     test_topic,
@@ -801,7 +795,7 @@ pub fn runtime_error_event_calls_on_error_test() {
     channel.connect(
       channel.config(
         host: "127.0.0.1",
-        port: 47_901,
+        port: port,
         path: "/socket/websocket",
         topic: test_topic,
         payload: empty_payload(),
@@ -829,14 +823,15 @@ pub fn runtime_error_event_calls_on_error_test() {
 
 pub fn runtime_decode_failures_call_on_error_test() {
   let events = process.new_subject()
-  let server = channel_server.start(47_902)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_ok(server, test_topic, empty_payload())
 
   let assert Ok(ch) =
     channel.connect(
       channel.config(
         host: "127.0.0.1",
-        port: 47_902,
+        port: port,
         path: "/socket/websocket",
         topic: test_topic,
         payload: empty_payload(),
@@ -861,7 +856,8 @@ pub fn runtime_decode_failures_call_on_error_test() {
 
 pub fn runtime_heartbeat_replies_are_swallowed_test() {
   let events = process.new_subject()
-  let server = channel_server.start(47_903)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   let heartbeat_topic = phoenix.codec().heartbeat_topic
   channel_server.register_ok(server, heartbeat_topic, empty_payload())
 
@@ -869,7 +865,7 @@ pub fn runtime_heartbeat_replies_are_swallowed_test() {
     channel.connect(
       channel.config(
         host: "127.0.0.1",
-        port: 47_903,
+        port: port,
         path: "/socket/websocket",
         topic: heartbeat_topic,
         payload: empty_payload(),
@@ -899,14 +895,15 @@ pub fn runtime_heartbeat_replies_are_swallowed_test() {
 pub fn runtime_heartbeat_schedules_after_join_test() {
   let events = process.new_subject()
   let seen = process.new_subject()
-  let server = channel_server.start(47_905)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_echo(server, test_topic, seen)
 
   let assert Ok(ch) =
     channel.connect_with_heartbeat(
       channel.config(
         host: "127.0.0.1",
-        port: 47_905,
+        port: port,
         path: "/socket/websocket",
         topic: test_topic,
         payload: empty_payload(),
@@ -934,7 +931,8 @@ pub fn runtime_heartbeat_schedules_after_join_test() {
 
 pub fn close_stops_actor_and_later_push_does_not_hang_test() {
   let events = process.new_subject()
-  let server = channel_server.start(close_push_test_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_ok(
     server,
     test_topic,
@@ -945,7 +943,7 @@ pub fn close_stops_actor_and_later_push_does_not_hang_test() {
     channel.connect(
       channel.config(
         host: "127.0.0.1",
-        port: close_push_test_port,
+        port: port,
         path: "/socket/websocket",
         topic: test_topic,
         payload: empty_payload(),
@@ -969,7 +967,8 @@ pub fn close_stops_actor_and_later_push_does_not_hang_test() {
 
 pub fn close_does_not_call_on_closed_for_self_close_test() {
   let events = process.new_subject()
-  let server = channel_server.start(close_self_close_test_port)
+  let server = channel_server.start()
+  let port = channel_server.port(server)
   channel_server.register_ok(
     server,
     test_topic,
@@ -980,7 +979,7 @@ pub fn close_does_not_call_on_closed_for_self_close_test() {
     channel.connect(
       channel.config(
         host: "127.0.0.1",
-        port: close_self_close_test_port,
+        port: port,
         path: "/socket/websocket",
         topic: test_topic,
         payload: empty_payload(),
