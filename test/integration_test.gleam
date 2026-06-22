@@ -11,107 +11,182 @@ import gleam/json
 import gleeunit/should
 import support/channel_server
 
-const test_port: Int = 47_895
+const join_callback_port: Int = 48_095
+
+const server_push_port: Int = 48_096
+
+const client_push_port: Int = 48_097
+
+const rejected_port: Int = 48_098
+
+const transport_error_port: Int = 48_099
 
 const test_path: String = "/socket/websocket"
 
-const unused_port: Int = 47_896
+const unused_port: Int = 48_100
 
-type Event {
-  Joined(String)
-  Message(String)
-  ErrorSeen(error.AquamarineError)
-  Closed
+type IntegrationEvent {
+  IntegrationJoined(String)
+  IntegrationMessage(Incoming)
+  IntegrationError(error.AquamarineError)
+  IntegrationClosed
 }
 
-type State {
-  State(events: process.Subject(Event))
+type IntegrationState {
+  IntegrationState(events: process.Subject(IntegrationEvent))
 }
 
-pub fn integration_tests_test() {
+pub fn integration_join_callback_test() {
   let events = process.new_subject()
-  let echo_events = process.new_subject()
-  let seen = process.new_subject()
-  let server = channel_server.start(test_port)
+  let server = channel_server.start(join_callback_port)
   channel_server.register_ok(
     server,
     "test:lobby",
     json.object([#("welcome", json.string("ok"))]),
   )
-  channel_server.register_rejected(server, "test:rejected")
+
+  let assert Ok(ch) =
+    aquamarine.connect(
+      aquamarine.config(
+        host: "127.0.0.1",
+        port: join_callback_port,
+        path: test_path,
+        topic: "test:lobby",
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      integration_handlers(),
+      IntegrationState(events),
+    )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(IntegrationJoined("ok")))
+
+  let assert Ok(Nil) = aquamarine.close(ch)
+  channel_server.stop(server)
+}
+
+pub fn integration_server_push_callback_test() {
+  let events = process.new_subject()
+  let server = channel_server.start(server_push_port)
+  channel_server.register_ok(
+    server,
+    "test:lobby",
+    json.object([#("welcome", json.string("ok"))]),
+  )
+
+  let assert Ok(ch) =
+    aquamarine.connect(
+      aquamarine.config(
+        host: "127.0.0.1",
+        port: server_push_port,
+        path: test_path,
+        topic: "test:lobby",
+        payload: json.object([]),
+        codec: phoenix.codec(),
+      ),
+      integration_handlers(),
+      IntegrationState(events),
+    )
+
+  process.receive(events, 1000)
+  |> should.equal(Ok(IntegrationJoined("ok")))
+
+  channel_server.broadcast(
+    server,
+    "test:lobby",
+    "tick",
+    json.object([#("n", json.int(42))]),
+  )
+
+  let assert Ok(IntegrationMessage(incoming)) = process.receive(events, 1000)
+  incoming.event |> should.equal("tick")
+  incoming.topic |> should.equal("test:lobby")
+
+  let decoder = {
+    use n <- decode.field("n", decode.int)
+    decode.success(n)
+  }
+  decode.run(incoming.payload, decoder)
+  |> should.equal(Ok(42))
+
+  let assert Ok(Nil) = aquamarine.close(ch)
+  channel_server.stop(server)
+}
+
+pub fn integration_client_push_reply_callback_test() {
+  let events = process.new_subject()
+  let seen = process.new_subject()
+  let server = channel_server.start(client_push_port)
   channel_server.register_echo(server, "test:echo", seen)
 
   let assert Ok(ch) =
     aquamarine.connect(
       aquamarine.config(
         host: "127.0.0.1",
-        port: test_port,
-        path: test_path,
-        topic: "test:lobby",
-        payload: json.object([]),
-        codec: phoenix.codec(),
-      ),
-      handlers(),
-      State(events),
-    )
-
-  process.receive(events, 1000)
-  |> should.equal(Ok(Joined("ok")))
-
-  let assert Ok(Nil) = aquamarine.close(ch)
-
-  let assert Ok(ch) =
-    aquamarine.connect(
-      aquamarine.config(
-        host: "127.0.0.1",
-        port: test_port,
+        port: client_push_port,
         path: test_path,
         topic: "test:echo",
         payload: json.object([]),
         codec: phoenix.codec(),
       ),
-      handlers(),
-      State(echo_events),
+      integration_handlers(),
+      IntegrationState(events),
     )
 
-  process.receive(echo_events, 1000)
-  |> should.equal(Ok(Joined("ok")))
+  process.receive(events, 1000)
+  |> should.equal(Ok(IntegrationJoined("ok")))
 
   let assert Ok(Nil) =
     aquamarine.push(ch, "say", json.object([#("body", json.string("hello"))]))
+
   process.receive(seen, 1000)
   |> should.equal(Ok("say"))
-  process.receive(echo_events, 1000)
-  |> should.equal(Ok(Message(phoenix.codec().reply_event)))
+
+  let assert Ok(IntegrationMessage(incoming)) = process.receive(events, 1000)
+  incoming.event |> should.equal(phoenix.codec().reply_event)
+  incoming.topic |> should.equal("test:echo")
 
   let assert Ok(Nil) = aquamarine.close(ch)
+  channel_server.stop(server)
+}
+
+pub fn integration_join_rejection_test() {
+  let server = channel_server.start(rejected_port)
+  channel_server.register_rejected(server, "test:rejected")
 
   aquamarine.connect(
     aquamarine.config(
       host: "127.0.0.1",
-      port: test_port,
+      port: rejected_port,
       path: test_path,
       topic: "test:rejected",
       payload: json.object([]),
       codec: phoenix.codec(),
     ),
-    handlers(),
-    State(process.new_subject()),
+    integration_handlers(),
+    IntegrationState(process.new_subject()),
   )
   |> should.equal(Error(error.JoinRejected("error")))
+
+  channel_server.stop(server)
+}
+
+pub fn integration_startup_transport_errors_test() {
+  let server = channel_server.start(transport_error_port)
 
   case
     aquamarine.connect(
       aquamarine.config(
         host: "127.0.0.1",
-        port: test_port,
+        port: transport_error_port,
         path: "/wrong",
         topic: "test:lobby",
         payload: json.object([]),
         codec: phoenix.codec(),
       ),
-      handlers(),
-      State(process.new_subject()),
+      integration_handlers(),
+      IntegrationState(process.new_subject()),
     )
   {
     Error(error.Transport(error.HandshakeFailed(_))) -> Nil
@@ -132,8 +207,8 @@ pub fn integration_tests_test() {
         payload: json.object([]),
         codec: phoenix.codec(),
       ),
-      handlers(),
-      State(process.new_subject()),
+      integration_handlers(),
+      IntegrationState(process.new_subject()),
     )
   {
     Error(error.Transport(error.SocketConnectionFailed(_))) -> Nil
@@ -147,27 +222,27 @@ pub fn integration_tests_test() {
   channel_server.stop(server)
 }
 
-fn handlers() {
+fn integration_handlers() {
   aquamarine.handlers(
-    on_joined: fn(state: State, payload) {
+    on_joined: fn(state: IntegrationState, payload) {
       let decoder = {
         use welcome <- decode.field("welcome", decode.string)
         decode.success(welcome)
       }
       let assert Ok(value) = decode.run(payload, decoder)
-      process.send(state.events, Joined(value))
+      process.send(state.events, IntegrationJoined(value))
       aquamarine.continue(state)
     },
-    on_message: fn(state: State, incoming: Incoming) {
-      process.send(state.events, Message(incoming.event))
+    on_message: fn(state: IntegrationState, incoming: Incoming) {
+      process.send(state.events, IntegrationMessage(incoming))
       aquamarine.continue(state)
     },
-    on_error: fn(state: State, err) {
-      process.send(state.events, ErrorSeen(err))
+    on_error: fn(state: IntegrationState, err) {
+      process.send(state.events, IntegrationError(err))
       aquamarine.continue(state)
     },
-    on_closed: fn(state: State) {
-      process.send(state.events, Closed)
+    on_closed: fn(state: IntegrationState) {
+      process.send(state.events, IntegrationClosed)
       aquamarine.continue(state)
     },
   )
