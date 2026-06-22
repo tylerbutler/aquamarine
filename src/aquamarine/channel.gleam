@@ -1,13 +1,8 @@
-//// Channel client lifecycle.
-////
-//// A `Channel` wraps either the callback runtime used by `connect` or the
-//// legacy in-memory transport path still used by tests.
+//// Channel client lifecycle for the callback runtime used by `connect`.
 
 import aquamarine/codec.{type Codec, type Incoming}
 import aquamarine/error
-import aquamarine/heartbeat
 import aquamarine/ref
-import aquamarine/transport.{type Connector, type Transport}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -156,14 +151,6 @@ const join_timeout_ms: Int = 5000
 pub opaque type Channel(state) {
   CallbackChannel(
     subject: process.Subject(stratus.InternalMessage(Command(state))),
-  )
-  LegacyChannel(
-    transport: Transport,
-    topic: String,
-    join_ref: String,
-    counter: ref.Counter,
-    heartbeat: heartbeat.Heartbeat,
-    codec: Codec,
   )
 }
 
@@ -318,55 +305,6 @@ fn do_connect(
   }
 }
 
-/// Like [`connect`](#connect) but takes a `Connector` and an explicit
-/// heartbeat interval. Used only by tests to plug in the in-memory transport.
-@internal
-pub fn connect_with(
-  connector: Connector,
-  topic: String,
-  payload: json.Json,
-  codec: Codec,
-  heartbeat_ms: Int,
-) -> Result(Channel(state), error.AquamarineError) {
-  use tx <- result.try(connector())
-
-  use counter <- result.try(start_legacy_counter(tx))
-
-  use join_ref <- result.try(next_join_ref(tx, counter))
-  let join_frame = codec.encode_join(join_ref, topic, payload)
-
-  use _ <- result.try(send_join(tx, counter, join_frame))
-
-  use _ <- result.try(await_join_reply_with_cleanup(
-    tx,
-    counter,
-    join_ref,
-    codec,
-  ))
-
-  let send_fn = fn(text: String) -> Result(Nil, Nil) {
-    tx.send_text(text)
-    |> result.map_error(fn(_) { Nil })
-  }
-
-  use hb <- result.try(start_heartbeat(
-    tx,
-    counter,
-    send_fn,
-    codec,
-    heartbeat_ms,
-  ))
-
-  Ok(LegacyChannel(
-    transport: tx,
-    topic: topic,
-    join_ref: join_ref,
-    counter: counter,
-    heartbeat: hb,
-    codec: codec,
-  ))
-}
-
 /// Push an event into the channel. Refs are assigned automatically.
 pub fn push(
   channel: Channel(state),
@@ -375,28 +313,14 @@ pub fn push(
 ) -> Result(Nil, error.AquamarineError) {
   case channel {
     CallbackChannel(subject) -> push_callback_channel(subject, event, payload)
-    LegacyChannel(..) -> push_legacy(channel, event, payload)
-  }
-}
-
-/// Receive the next inbound frame on the legacy test channel.
-@internal
-pub fn receive(
-  channel: Channel(state),
-) -> Result(Incoming, error.AquamarineError) {
-  case channel {
-    CallbackChannel(_) -> Error(error.ChannelClosed)
-    LegacyChannel(..) -> do_receive(channel)
   }
 }
 
 /// Close the channel and underlying transport. Callback channels ask the
-/// Stratus actor to close itself; legacy channels stop their helper actors and
-/// close the transport directly.
+/// Stratus actor to close itself.
 pub fn close(channel: Channel(state)) -> Result(Nil, error.AquamarineError) {
   case channel {
     CallbackChannel(subject) -> close_callback_channel(subject)
-    LegacyChannel(..) -> close_legacy(channel)
   }
 }
 
@@ -697,172 +621,6 @@ fn handle_transport_closed(
   }
   ref.stop(state.counter)
   Nil
-}
-
-fn push_legacy(
-  channel: Channel(state),
-  event: String,
-  payload: json.Json,
-) -> Result(Nil, error.AquamarineError) {
-  let assert LegacyChannel(transport:, topic:, join_ref:, counter:, codec:, ..) =
-    channel
-  use ref <- result.try(
-    ref.next(counter)
-    |> result.map_error(fn(_) { error.ChannelClosed }),
-  )
-  let text = codec.encode_push(join_ref, ref, topic, event, payload)
-  transport.send_text(text)
-}
-
-fn do_receive(
-  channel: Channel(state),
-) -> Result(Incoming, error.AquamarineError) {
-  let assert LegacyChannel(transport:, codec:, ..) = channel
-  use frame <- result.try(transport.receive())
-
-  case frame {
-    transport.Text(text) ->
-      case codec.decode(text) {
-        Ok(incoming) -> handle_incoming(channel, incoming)
-        Error(err) -> Error(error.DecodeFailed(err))
-      }
-    transport.Binary(_) -> do_receive(channel)
-    transport.Closed -> Error(error.ChannelClosed)
-  }
-}
-
-fn handle_incoming(
-  channel: Channel(state),
-  incoming: Incoming,
-) -> Result(Incoming, error.AquamarineError) {
-  let assert LegacyChannel(codec:, ..) = channel
-  case incoming.event {
-    e if e == codec.close_event -> Error(error.ChannelClosed)
-    e if e == codec.error_event -> Error(error.ChannelClosed)
-    e if e == codec.reply_event && incoming.topic == codec.heartbeat_topic ->
-      do_receive(channel)
-    _ -> Ok(incoming)
-  }
-}
-
-fn close_legacy(channel: Channel(state)) -> Result(Nil, error.AquamarineError) {
-  let assert LegacyChannel(transport:, counter:, heartbeat: hb, ..) = channel
-  heartbeat.stop(hb)
-  ref.stop(counter)
-  transport.close()
-}
-
-fn cleanup_connect(tx: Transport, counter: ref.Counter) -> Nil {
-  ref.stop(counter)
-  let _ = tx.close()
-  Nil
-}
-
-fn start_legacy_counter(
-  tx: Transport,
-) -> Result(ref.Counter, error.AquamarineError) {
-  case ref.start() {
-    Ok(counter) -> Ok(counter)
-    Error(_) -> {
-      let _ = tx.close()
-      Error(error.InternalError("failed to start ref counter actor"))
-    }
-  }
-}
-
-fn next_join_ref(
-  tx: Transport,
-  counter: ref.Counter,
-) -> Result(String, error.AquamarineError) {
-  case ref.next(counter) {
-    Ok(join_ref) -> Ok(join_ref)
-    Error(_) -> {
-      cleanup_connect(tx, counter)
-      Error(error.InternalError("failed to obtain join ref from counter"))
-    }
-  }
-}
-
-fn send_join(
-  tx: Transport,
-  counter: ref.Counter,
-  join_frame: String,
-) -> Result(Nil, error.AquamarineError) {
-  case tx.send_text(join_frame) {
-    Ok(_) -> Ok(Nil)
-    Error(err) -> {
-      cleanup_connect(tx, counter)
-      Error(err)
-    }
-  }
-}
-
-fn await_join_reply_with_cleanup(
-  tx: Transport,
-  counter: ref.Counter,
-  join_ref: String,
-  codec: Codec,
-) -> Result(Nil, error.AquamarineError) {
-  case await_join_reply(tx, join_ref, codec) {
-    Ok(_) -> Ok(Nil)
-    Error(err) -> {
-      cleanup_connect(tx, counter)
-      Error(err)
-    }
-  }
-}
-
-fn start_heartbeat(
-  tx: Transport,
-  counter: ref.Counter,
-  send_fn: fn(String) -> Result(Nil, Nil),
-  codec: Codec,
-  interval_ms: Int,
-) -> Result(heartbeat.Heartbeat, error.AquamarineError) {
-  case heartbeat.start(send_fn, interval_ms, counter, codec) {
-    Ok(hb) -> Ok(hb)
-    Error(_) -> {
-      cleanup_connect(tx, counter)
-      Error(error.InternalError("failed to start heartbeat actor"))
-    }
-  }
-}
-
-fn await_join_reply(
-  tx: Transport,
-  join_ref: String,
-  codec: Codec,
-) -> Result(Nil, error.AquamarineError) {
-  use frame <- result.try(tx.receive())
-
-  case frame {
-    transport.Text(text) ->
-      case codec.decode(text) {
-        Ok(incoming) -> match_join_reply(tx, join_ref, incoming, codec)
-        Error(err) -> Error(error.DecodeFailed(err))
-      }
-    transport.Closed -> Error(error.ChannelClosed)
-    transport.Binary(_) -> await_join_reply(tx, join_ref, codec)
-  }
-}
-
-fn match_join_reply(
-  tx: Transport,
-  join_ref: String,
-  incoming: Incoming,
-  codec: Codec,
-) -> Result(Nil, error.AquamarineError) {
-  case incoming.event, incoming.ref {
-    event, Some(reply_ref)
-      if event == codec.reply_event && reply_ref == join_ref
-    ->
-      case decode_reply_status(incoming.payload) {
-        Ok("ok") -> Ok(Nil)
-        Ok(other) -> Error(error.JoinRejected(other))
-        Error(_) -> Error(error.JoinRejected("malformed reply"))
-      }
-    _, _ -> await_join_reply(tx, join_ref, codec)
-  }
 }
 
 fn decode_reply_status(payload: Dynamic) -> Result(String, Nil) {
