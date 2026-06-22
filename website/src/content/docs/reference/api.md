@@ -87,9 +87,9 @@ The callback helpers return the next actor action:
 
 - `continue(state)` keeps the channel actor running with the updated
   state.
-- `stop()` ends the actor loop and closes the channel cleanly. Terminal
-  callbacks run after the actor is already stopped, so their `Next` value is
-  ignored.
+- `stop()` ends the local channel actor loop without sending the normal
+  WebSocket close frame. Terminal callbacks run after the actor is already
+  stopped, so their `Next` value is ignored.
 
 ## Types you'll see
 
