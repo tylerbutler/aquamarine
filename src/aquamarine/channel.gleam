@@ -499,19 +499,25 @@ fn start_join(
         Error(reason) -> {
           let err =
             error.Transport(error.SocketSendFailed(string.inspect(reason)))
-          process.send(reply_to, Error(err))
-          ref.stop(state.counter)
-          stratus.stop()
+          fail_join(state, reply_to, err)
         }
       }
     }
     Error(_) -> {
       let err = error.InternalError("failed to obtain join ref from counter")
-      process.send(reply_to, Error(err))
-      ref.stop(state.counter)
-      stratus.stop()
+      fail_join(state, reply_to, err)
     }
   }
+}
+
+fn fail_join(
+  state: RuntimeState(state),
+  reply_to: process.Subject(Result(Nil, error.AquamarineError)),
+  err: error.AquamarineError,
+) -> stratus.Next(RuntimeState(state), Command(state)) {
+  process.send(reply_to, Error(err))
+  ref.stop(state.counter)
+  stratus.continue(RuntimeState(..state, join_state: Closing))
 }
 
 fn handle_text(
@@ -531,9 +537,7 @@ fn handle_text(
       case state.join_state {
         Joining(reply_to, _) -> {
           let err = error.DecodeFailed(decode_error)
-          process.send(reply_to, Error(err))
-          ref.stop(state.counter)
-          stratus.stop()
+          fail_join(state, reply_to, err)
         }
         _ -> {
           let next =
@@ -600,20 +604,14 @@ fn complete_join(
           }
         }
         Error(_) -> {
-          process.send(reply_to, Error(error.JoinRejected("malformed reply")))
-          ref.stop(state.counter)
-          stratus.stop()
+          fail_join(state, reply_to, error.JoinRejected("malformed reply"))
         }
       }
     Ok(other) -> {
-      process.send(reply_to, Error(error.JoinRejected(other)))
-      ref.stop(state.counter)
-      stratus.stop()
+      fail_join(state, reply_to, error.JoinRejected(other))
     }
     Error(_) -> {
-      process.send(reply_to, Error(error.JoinRejected("malformed reply")))
-      ref.stop(state.counter)
-      stratus.stop()
+      fail_join(state, reply_to, error.JoinRejected("malformed reply"))
     }
   }
 }
