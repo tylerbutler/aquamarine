@@ -274,7 +274,6 @@ pub fn runtime_close_event_calls_on_closed_test() {
 
   process.receive(events, 1000) |> should.equal(Ok(RuntimeClosed))
 
-  process.sleep(20)
   channel.close(ch) |> should.equal(Error(error.ChannelClosed))
   channel_server.stop(server)
 }
@@ -315,7 +314,6 @@ pub fn runtime_error_event_calls_on_error_test() {
   process.receive(events, 1000)
   |> should.equal(Ok(RuntimeErrorSeen(error.ChannelClosed)))
 
-  process.sleep(20)
   channel.close(ch) |> should.equal(Error(error.ChannelClosed))
   channel_server.stop(server)
 }

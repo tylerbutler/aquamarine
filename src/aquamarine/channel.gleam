@@ -3,6 +3,7 @@
 import aquamarine/codec.{type Codec, type Incoming}
 import aquamarine/error
 import aquamarine/ref
+import gleam/bool
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -290,12 +291,16 @@ fn do_connect(
   case stratus.start(builder) {
     Ok(started) -> {
       process.unlink(started.pid)
-      use monitor <- result.try(start_runtime_monitor(
-        started.pid,
-        handlers,
-        initial_state,
-        counter,
-      ))
+      let monitor_result =
+        start_runtime_monitor(started.pid, handlers, initial_state, counter)
+      use monitor <- result.try(case monitor_result {
+        Ok(monitor) -> Ok(monitor)
+        Error(err) -> {
+          let _ = request_close(started.data)
+          ref.stop(counter)
+          Error(err)
+        }
+      })
       let self_reply = process.new_subject()
       SetSelfSubject(
         subject: started.data,
@@ -346,10 +351,7 @@ pub fn push(
 ) -> Result(Nil, error.AquamarineError) {
   case channel {
     CallbackChannel(pid, subject) ->
-      case process.is_alive(pid) {
-        True -> push_callback_channel(subject, event, payload)
-        False -> Error(error.ChannelClosed)
-      }
+      push_callback_channel(pid, subject, event, payload)
   }
 }
 
@@ -357,11 +359,7 @@ pub fn push(
 /// Stratus actor to close itself.
 pub fn close(channel: Channel(state)) -> Result(Nil, error.AquamarineError) {
   case channel {
-    CallbackChannel(pid, subject) ->
-      case process.is_alive(pid) {
-        True -> close_callback_channel(subject)
-        False -> Error(error.ChannelClosed)
-      }
+    CallbackChannel(pid, subject) -> close_callback_channel(pid, subject)
   }
 }
 
@@ -407,33 +405,51 @@ fn request_close(
 }
 
 fn close_callback_channel(
+  pid: process.Pid,
   subject: process.Subject(stratus.InternalMessage(Command(state))),
 ) -> Result(Nil, error.AquamarineError) {
-  let reply_to = process.new_subject()
-  Close(reply_to)
-  |> stratus.to_user_message
-  |> process.send(subject, _)
-
-  case process.receive(reply_to, join_timeout_ms) {
-    Ok(result) -> result
-    Error(_) -> Error(error.ReplyTimeout)
-  }
+  call_runtime(pid, subject, Close)
 }
 
 fn push_callback_channel(
+  pid: process.Pid,
   subject: process.Subject(stratus.InternalMessage(Command(state))),
   event: String,
   payload: json.Json,
 ) -> Result(Nil, error.AquamarineError) {
+  call_runtime(pid, subject, fn(reply_to) { Push(event:, payload:, reply_to:) })
+}
+
+fn call_runtime(
+  pid: process.Pid,
+  subject: process.Subject(stratus.InternalMessage(Command(state))),
+  make_command: fn(process.Subject(Result(Nil, error.AquamarineError))) ->
+    Command(state),
+) -> Result(Nil, error.AquamarineError) {
+  let monitor = process.monitor(pid)
+  use <- bool.guard(when: !process.is_alive(pid), return: {
+    process.demonitor_process(monitor:)
+    Error(error.ChannelClosed)
+  })
+
   let reply_to = process.new_subject()
-  Push(event:, payload:, reply_to:)
+  make_command(reply_to)
   |> stratus.to_user_message
   |> process.send(subject, _)
 
-  case process.receive(reply_to, join_timeout_ms) {
+  let selector =
+    process.new_selector()
+    |> process.select(reply_to)
+    |> process.select_specific_monitor(monitor, fn(_) {
+      Error(error.ChannelClosed)
+    })
+
+  let result = case process.selector_receive(selector, join_timeout_ms) {
     Ok(result) -> result
     Error(_) -> Error(error.ReplyTimeout)
   }
+  process.demonitor_process(monitor:)
+  result
 }
 
 fn loop(
