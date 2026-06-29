@@ -114,25 +114,22 @@ pub fn channel_tests() {
         fake.is_closed(f) |> expect.to_equal(True)
         fake.shutdown(f)
       }),
-      it(
-        "maps a malformed reply payload to JoinRejected(\"malformed reply\")",
-        fn() {
-          let f = fake.start()
-          fake.enqueue_text(f, malformed_reply("1"))
+      it("maps a malformed reply payload to JoinRejected(\"error\")", fn() {
+        let f = fake.start()
+        fake.enqueue_text(f, malformed_reply("1"))
 
-          channel.connect_with(
-            fake.connector_for(f),
-            test_topic,
-            empty_payload(),
-            phoenix.codec(),
-            no_heartbeat,
-          )
-          |> expect.to_equal(Error(error.JoinRejected("malformed reply")))
+        channel.connect_with(
+          fake.connector_for(f),
+          test_topic,
+          empty_payload(),
+          phoenix.codec(),
+          no_heartbeat,
+        )
+        |> expect.to_equal(Error(error.JoinRejected("error")))
 
-          fake.is_closed(f) |> expect.to_equal(True)
-          fake.shutdown(f)
-        },
-      ),
+        fake.is_closed(f) |> expect.to_equal(True)
+        fake.shutdown(f)
+      }),
       it("maps undecodable text on the reply channel to DecodeFailed", fn() {
         let f = fake.start()
         fake.enqueue_text(f, "this is not valid json")

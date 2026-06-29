@@ -23,6 +23,8 @@ pub type Codec {
     encode_join: fn(String, String, json.Json) -> String,
     encode_push: fn(String, String, String, String, json.Json) -> String,
     encode_heartbeat: fn(String) -> String,
+    matches_reply: fn(Incoming, String) -> Bool,
+    reply_status: fn(Incoming) -> Result(Nil, String),
     join_event: String,
     reply_event: String,
     close_event: String,
@@ -52,8 +54,11 @@ schema — decoders in your own code can turn it into typed records.
 ## How the channel uses it
 
 - On `connect`, the channel calls `codec.encode_join(join_ref, topic, payload)`
-  and sends the resulting text, then waits for an inbound frame whose
-  decoded `event == codec.reply_event` and `ref == join_ref`.
+  and sends the resulting text, then waits for an inbound frame for which
+  `codec.matches_reply(incoming, join_ref)` is `True`. It then calls
+  `codec.reply_status(incoming)`: `Ok(Nil)` joins, `Error(reason)` rejects.
+  Ref-based protocols match on `ref`; refless protocols (e.g. Socket.IO) can
+  match on event name alone.
 - On `push`, the channel calls
   `codec.encode_push(join_ref, ref, topic, event, payload)`.
 - The heartbeat actor calls `codec.encode_heartbeat(ref)` on every tick.
@@ -76,6 +81,7 @@ encode/decode functions:
 ```gleam
 import aquamarine/codec.{Codec, Incoming, InvalidFormat}
 import gleam/json
+import gleam/option
 
 pub fn my_codec() -> codec.Codec {
   Codec(
@@ -83,6 +89,10 @@ pub fn my_codec() -> codec.Codec {
     encode_join: my_encode_join,
     encode_push: my_encode_push,
     encode_heartbeat: my_encode_heartbeat,
+    matches_reply: fn(in, join_ref) {
+      in.event == "reply" && in.ref == option.Some(join_ref)
+    },
+    reply_status: fn(_in) { Ok(Nil) },
     join_event: "join",
     reply_event: "reply",
     close_event: "close",
@@ -95,6 +105,17 @@ pub fn my_codec() -> codec.Codec {
 Then pass it to `aquamarine.connect(..., codec: my_codec())`. The
 channel runtime will use it for every wire interaction; nothing in
 `aquamarine/channel` needs to change.
+
+### Refless protocols
+
+`matches_reply` lets the codec decide how a join reply is correlated, so
+protocols without a `ref` work too. A Socket.IO-style codec can match the
+join purely by event name:
+
+```gleam
+matches_reply: fn(in, _join_ref) { in.event == "connect_document_success" },
+reply_status: fn(_in) { Ok(Nil) },
+```
 
 ### Decode errors
 
