@@ -4,7 +4,7 @@ import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import phoenix_channel_fixtures/frame as fixtures
 import startest.{describe, it}
 import startest/expect
@@ -75,7 +75,55 @@ pub fn codec_tests() {
       codec.error_event |> expect.to_equal(fixtures.error_event)
       codec.heartbeat_topic |> expect.to_equal(fixtures.heartbeat_topic)
     }),
+    it("matches a join reply by ref and reads its status", fn() {
+      let codec = phoenix.codec()
+      let reply =
+        incoming(ref: Some("7"), event: fixtures.reply_event, status: "ok")
+
+      codec.matches_reply(reply, "7") |> expect.to_equal(True)
+      codec.matches_reply(reply, "8") |> expect.to_equal(False)
+      codec.reply_status(reply) |> expect.to_equal(Ok(Nil))
+    }),
+    it("correlates a refless reply via matches_reply", fn() {
+      let refless = refless_codec()
+      let reply =
+        incoming(ref: None, event: "connect_document_success", status: "ok")
+
+      refless.matches_reply(reply, "ignored") |> expect.to_equal(True)
+      refless.reply_status(reply) |> expect.to_equal(Ok(Nil))
+    }),
   ])
+}
+
+/// Codec for a refless protocol: correlates a join reply purely by event name.
+fn refless_codec() -> aquamarine_codec.Codec {
+  let phx = phoenix.codec()
+  aquamarine_codec.Codec(
+    ..phx,
+    matches_reply: fn(in: aquamarine_codec.Incoming, _jr) {
+      in.event == "connect_document_success"
+    },
+    reply_status: fn(_in) { Ok(Nil) },
+  )
+}
+
+fn incoming(
+  ref ref: option.Option(String),
+  event event: String,
+  status status: String,
+) -> aquamarine_codec.Incoming {
+  let assert Ok(payload) =
+    json.parse(
+      json.to_string(json.object([#("status", json.string(status))])),
+      decode.dynamic,
+    )
+  aquamarine_codec.Incoming(
+    join_ref: ref,
+    ref: ref,
+    topic: "t",
+    event: event,
+    payload: payload,
+  )
 }
 
 fn assert_payload_matches(actual: Dynamic, expected: json.Json) {

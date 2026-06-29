@@ -16,10 +16,7 @@ import aquamarine/error.{type AquamarineError}
 import aquamarine/heartbeat
 import aquamarine/ref
 import aquamarine/transport.{type Connector, type Transport}
-import gleam/dynamic.{type Dynamic}
-import gleam/dynamic/decode
 import gleam/json
-import gleam/option.{Some}
 import gleam/result
 
 /// Default heartbeat interval, matching the Phoenix JS client.
@@ -277,24 +274,12 @@ fn match_join_reply(
   incoming: Incoming,
   codec: Codec,
 ) -> Result(Nil, AquamarineError) {
-  case incoming.event, incoming.ref {
-    event, Some(reply_ref)
-      if event == codec.reply_event && reply_ref == join_ref
-    ->
-      case decode_reply_status(incoming.payload) {
-        Ok("ok") -> Ok(Nil)
-        Ok(other) -> Error(error.JoinRejected(other))
-        Error(_) -> Error(error.JoinRejected("malformed reply"))
+  case codec.matches_reply(incoming, join_ref) {
+    True ->
+      case codec.reply_status(incoming) {
+        Ok(Nil) -> Ok(Nil)
+        Error(reason) -> Error(error.JoinRejected(reason))
       }
-    _, _ -> await_join_reply(tx, join_ref, codec)
+    False -> await_join_reply(tx, join_ref, codec)
   }
-}
-
-fn decode_reply_status(payload: Dynamic) -> Result(String, Nil) {
-  let decoder = {
-    use status <- decode.field("status", decode.string)
-    decode.success(status)
-  }
-  decode.run(payload, decoder)
-  |> result.map_error(fn(_) { Nil })
 }
