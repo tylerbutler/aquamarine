@@ -14,10 +14,12 @@ Gleam-native Phoenix-compatible channel server.
 ```gleam
 import aquamarine
 import aquamarine/phoenix
+import aquamarine/transport
 import gleam/json
 
 let assert Ok(channel) =
   aquamarine.connect(
+    scheme: transport.Ws,
     host: "localhost",
     port: 4000,
     path: "/socket/websocket",
@@ -58,12 +60,11 @@ JSON your server's `join/3` callback expects.
 To push a message, use any event name your server understands:
 
 ```gleam
-let _ =
-  aquamarine.push(
-    channel,
-    "new_msg",
-    json.object([#("body", json.string("hello"))]),
-  )
+aquamarine.push(
+  channel,
+  "new_msg",
+  json.object([#("body", json.string("hello"))]),
+)
 ```
 
 ## Heartbeats
@@ -71,7 +72,8 @@ let _ =
 The bundled codec wires up Phoenix's heartbeat format (event
 `"heartbeat"` on the `"phoenix"` topic). Aquamarine fires one every
 30 seconds by default — the same cadence as the Phoenix JS client — and
-suppresses the matching replies inside `receive`, so you never see them.
+the replies come back on the reserved `"phoenix"` topic, which never has a
+channel, so they are dropped before they could reach any `receive`.
 
 ## Working with Beryl
 

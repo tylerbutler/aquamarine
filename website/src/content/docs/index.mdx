@@ -3,7 +3,7 @@ title: Aquamarine
 description: Protocol-agnostic Beryl-style WebSocket channel client for Gleam on the BEAM.
 template: splash
 hero:
-  tagline: "A clear channel runtime for Gleam: four public functions, typed failures, and protocol-specific codecs at the edge."
+  tagline: "A clear channel runtime for Gleam: an actor-owned socket, typed failures, and protocol-specific codecs at the edge."
   image:
     file: ../../assets/aquamarine-logo.webp
     alt: Aquamarine logo
@@ -29,8 +29,10 @@ when you need exact signatures.
   <section className="aqua-intro">
     <p className="aqua-copy">
       Aquamarine is the <strong>client runtime</strong> for Beryl-style
-      WebSocket channels in Gleam. It owns the process lifecycle and keeps
-      the wire protocol behind a pluggable <a href="/guides/codecs/">Codec</a>.
+      WebSocket channels in Gleam. The socket lives in an OTP actor that
+      owns the connection, so reconnect and reply correlation are the
+      library's problem rather than yours — and the wire protocol stays
+      behind a pluggable <a href="/guides/codecs/">Codec</a>.
     </p>
     <p className="aqua-copy">
       Use the bundled <a href="/guides/phoenix/">aquamarine/phoenix</a> codec
@@ -40,10 +42,10 @@ when you need exact signatures.
   </section>
 
   <section className="aqua-section">
-    <h2>One channel, five moving parts</h2>
+    <h2>One actor, five moving parts</h2>
     <p className="aqua-copy">
-      The public API stays small because Aquamarine handles the recurring
-      channel work after the socket opens.
+      The public API stays small because the socket actor handles the
+      recurring channel work after the connection opens.
     </p>
     <ol className="aqua-lifecycle" aria-label="Aquamarine channel lifecycle">
       <li className="aqua-lifecycle__step">
@@ -54,31 +56,31 @@ when you need exact signatures.
       <li className="aqua-lifecycle__step">
         <code>refs</code>
         <strong>Count in order</strong>
-        <span>A small actor issues monotonic refs for pushes and heartbeats.</span>
+        <span>Refs are minted inside the actor, in the handler that sends the frame carrying them.</span>
       </li>
       <li className="aqua-lifecycle__step">
         <code>heartbeat</code>
-        <strong>Keep the channel alive</strong>
-        <span>The heartbeat actor uses the same codec boundary as the rest of the runtime.</span>
+        <strong>Keep the connection alive</strong>
+        <span>A timed self-message, running for the life of the socket rather than per channel.</span>
       </li>
       <li className="aqua-lifecycle__step">
         <code>push / receive</code>
         <strong>Move application frames</strong>
-        <span>Outbound events are encoded; inbound noise and heartbeat replies are filtered.</span>
+        <span>Inbound frames route by topic; replies correlate back to the push that asked.</span>
       </li>
       <li className="aqua-lifecycle__step">
-        <code>close</code>
-        <strong>Clean up actors</strong>
-        <span>Shutdown stops the heartbeat and ref counter before closing the socket.</span>
+        <code>reconnect</code>
+        <strong>Come back on its own</strong>
+        <span>A dropped connection retries on a backoff and rejoins every topic. Your handles stay valid.</span>
       </li>
     </ol>
   </section>
 
   <section className="aqua-section">
-    <h2>Four functions, one typed error surface</h2>
+    <h2>One typed error surface</h2>
     <p className="aqua-copy">
       Connect to a Phoenix-compatible endpoint and handle failures through the
-      same <code>AquamarineError</code> variants returned by every public
+      same <code>AquamarineError</code> variants returned by every fallible
       operation.
     </p>
   </section>
@@ -87,9 +89,11 @@ when you need exact signatures.
 ```gleam
 import aquamarine
 import aquamarine/phoenix
+import aquamarine/transport
 import gleam/json
 
 case aquamarine.connect(
+  scheme: transport.Ws,
   host: "localhost",
   port: 4000,
   path: "/socket/websocket",
@@ -122,7 +126,7 @@ See [Error handling](/guides/error-handling/) for the
       </div>
       <div className="aqua-path">
         <strong>Runtime model</strong>
-        <span>Understand ownership, filtering, refs, and cleanup.</span>
+        <span>Sockets, channels, ownership, routing, and cleanup.</span>
         <a href="/guides/channels/">Read the lifecycle <span className="aqua-arrow" aria-hidden="true">→</span></a>
       </div>
       <div className="aqua-path">
@@ -132,7 +136,7 @@ See [Error handling](/guides/error-handling/) for the
       </div>
       <div className="aqua-path" data-variant="error">
         <strong>Errors and API</strong>
-        <span>Handle each failure variant and browse the four-function surface.</span>
+        <span>Handle each failure variant and browse the public surface.</span>
         <a href="/guides/error-handling/">Handle failures <span className="aqua-arrow" aria-hidden="true">→</span></a>
       </div>
     </div>

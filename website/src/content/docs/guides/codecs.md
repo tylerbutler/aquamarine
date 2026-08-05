@@ -26,6 +26,7 @@ pub type Codec {
     matches_reply: fn(Incoming, String) -> Bool,
     reply_status: fn(Incoming) -> Result(Nil, String),
     join_event: String,
+    leave_event: String,
     reply_event: String,
     close_event: String,
     error_event: String,
@@ -53,18 +54,32 @@ schema — decoders in your own code can turn it into typed records.
 
 ## How the channel uses it
 
-- On `connect`, the channel calls `codec.encode_join(join_ref, topic, payload)`
+Everything below happens inside the socket actor, which is the only thing
+that touches a codec.
+
+- On a join, the socket calls `codec.encode_join(join_ref, topic, payload)`
   and sends the resulting text, then waits for an inbound frame for which
   `codec.matches_reply(incoming, join_ref)` is `True`. It then calls
   `codec.reply_status(incoming)`: `Ok(Nil)` joins, `Error(reason)` rejects.
   Ref-based protocols match on `ref`; refless protocols (e.g. Socket.IO) can
   match on event name alone.
-- On `push`, the channel calls
-  `codec.encode_push(join_ref, ref, topic, event, payload)`.
-- The heartbeat actor calls `codec.encode_heartbeat(ref)` on every tick.
-- On `receive`, the channel calls `codec.decode(text)` and then checks
-  `event` against `close_event`, `error_event`, and `reply_event` (the
-  last only suppressed when the topic matches `heartbeat_topic`).
+- On a push, the socket calls
+  `codec.encode_push(join_ref, ref, topic, event, payload)`. A `leave` is the
+  same call with `leave_event` and an empty payload.
+- The heartbeat calls `codec.encode_heartbeat(ref)` on every tick.
+- On every inbound frame, the socket calls `codec.decode(text)`, uses
+  `matches_reply` to see whether it answers anyone waiting on a ref, and
+  otherwise routes it by `incoming.topic`. `close_event` and `error_event`
+  terminate that topic's channel.
+
+`matches_reply` is the whole of reply correlation. A codec that cannot
+correlate simply never matches, and callers waiting on a reply fall back to
+their timeout rather than hanging.
+
+Because the socket must decode every frame to read its topic before it can
+route, **the codec belongs to the socket, not to a channel** — one connection
+speaks one wire protocol, matching Phoenix's one-serializer-per-socket
+model.
 
 ## The bundled Phoenix codec
 
@@ -102,7 +117,8 @@ pub fn my_codec() -> codec.Codec {
 }
 ```
 
-Then pass it to `aquamarine.connect(..., codec: my_codec())`. The
+Then pass it to `socket.connect(..., codec: my_codec())`, or to
+`aquamarine.connect(..., codec: my_codec())` for the single-topic path. The
 channel runtime will use it for every wire interaction; nothing in
 `aquamarine/channel` needs to change.
 

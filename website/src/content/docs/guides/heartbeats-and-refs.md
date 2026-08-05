@@ -1,67 +1,77 @@
 ---
 title: Heartbeats and refs
-description: How Aquamarine keeps the channel alive and assigns refs, and what callers do not need to manage.
+description: How the socket keeps the connection alive and assigns refs, and what callers do not need to manage.
 ---
 
-Two small OTP actors live behind every `Channel`: a **ref counter** that
-hands out monotonic refs for outbound frames, and a **heartbeat** that
-periodically sends a heartbeat frame using one of those refs. Both are
-started by `connect` and stopped by `close`. You should rarely need to
-think about them — this page is here so you know what's happening if you
-ever do.
+Both of these used to be separate OTP actors. They are now plain state inside
+the socket actor, which is the process that was always going to need them.
+You should rarely have to think about either — this page is here so you know
+what is happening if you ever do.
 
 ## Refs
 
-Phoenix-style channel protocols correlate requests and replies by an
-opaque string ref. Aquamarine generates these with a tiny counter actor:
+Phoenix-style channel protocols correlate requests and replies by an opaque
+string ref. The socket mints them from a counter in its own state:
 
-- The counter starts at `0`. The first `next` call returns `"1"`, the
-  second returns `"2"`, and so on, as strings.
-- `connect` pulls the first ref to use as the `join_ref`.
-- Every `push` pulls a new ref before encoding the frame.
-- The heartbeat pulls a fresh ref on every tick.
+- The first ref is `"1"`, then `"2"`, and so on, as strings.
+- `join` mints one to use as the `join_ref`.
+- Every `push` mints a new one before encoding the frame.
+- The heartbeat mints a fresh one on every tick.
 
-The `Counter` type is **opaque** — callers cannot construct one or read
-its internal subject. That is intentional: it stops user code from
-accidentally sharing a counter between channels or driving it
-out-of-band.
+The ref is minted **in the same message handler that sends the frame carrying
+it**. Under the old design a ref was obtained and the frame sent in two steps
+from two different processes, so ref order and send order could diverge. Now
+they cannot.
+
+Refs keep counting up across a reconnect rather than resetting. If they
+restarted at `"1"`, a stale in-flight reply from the dropped connection could
+correlate against a fresh ref on the new one.
+
+## Join refs and rejoins
+
+Each joined topic carries a join ref, and the socket stamps it onto that
+topic's outbound frames. You never pass one.
+
+That is what makes a rejoin invisible: after a reconnect the topic is rejoined
+under a *new* join ref, and because the socket owns it rather than your
+`Channel` handle, nothing you hold goes stale.
 
 ## Heartbeats
 
-The heartbeat actor is started after the join reply succeeds. On each
-tick it:
-
-1. Asks the ref counter for the next ref.
-2. Calls `codec.encode_heartbeat(ref)` to build the frame.
-3. Sends the frame through the same socket as `push`.
+The heartbeat is a timed self-message inside the socket actor. On each tick it
+mints a ref, calls `codec.encode_heartbeat(ref)`, sends the frame, and
+reschedules.
 
 The default interval is **30 seconds**, matching the Phoenix JS client.
-If `send_fn` ever fails — typically because the socket is gone — the
-heartbeat actor stops itself.
+Override it with `socket.with_heartbeat_ms` on the config.
 
-Heartbeat replies from the server are filtered out inside `receive`, so
-they never surface as application-visible frames.
+It runs for the life of the connection regardless of how many channels are
+joined, including zero — the heartbeat lives on the socket, not the channel.
+A socket that has lost its connection stops beating, and starts again once it
+reconnects.
+
+Heartbeat replies come back on the protocol's reserved heartbeat topic, which
+never has a channel, so they are dropped as ordinary unknown-topic frames.
+There is no special case for them, and they never surface to `receive`.
 
 ## What `close` does for you
 
-`close` stops the heartbeat actor first, then the ref counter, then
-closes the transport. There is no race in which a heartbeat tick races a
-close — by the time the transport is touched, the heartbeat is no longer
-ticking.
+Closing the socket cancels the pending heartbeat tick before stopping, so no
+heartbeat frame outlives a close. There is no race in which a tick beats a
+teardown.
 
-The heartbeat actor's `Heartbeat` and `Message` types and the ref
-counter's `Counter` and `Message` types are all opaque. The public API
-gives you no way (and no reason) to send messages directly to either
-actor.
+## Configuration
 
-## When things go wrong
+```gleam
+import aquamarine/socket
 
-- If the ref counter fails to start, `connect` returns
-  `Error(InternalError(...))` and tears down the socket.
-- If the heartbeat fails to start, `connect` returns
-  `Error(InternalError(...))` and tears down both the counter and the socket.
-- If the heartbeat fails to send mid-session, the actor stops silently;
-  the next `push` or `receive` will surface the underlying transport
-  error.
+let config =
+  socket.config(scheme:, host:, port:, path:, codec:)
+  |> socket.with_heartbeat_ms(10_000)
+```
 
-See [Error handling](/guides/error-handling/) for the full error taxonomy.
+## Related
+
+- [Reconnect](/guides/reconnect/) — what refs and heartbeats do across a
+  dropped connection.
+- [Error handling](/guides/error-handling/) — the full error taxonomy.

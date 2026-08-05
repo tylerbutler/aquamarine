@@ -1,6 +1,6 @@
 ---
 title: Beryl ecosystem
-description: How Aquamarine, Beryl, Phoenix codecs, Gluegun, and Roost fit together.
+description: How Aquamarine, Beryl, Phoenix codecs, Collie, and Roost fit together.
 ---
 
 Aquamarine is one piece of a small constellation of Gleam packages that
@@ -13,7 +13,7 @@ neighbours does.
 <figure
   class="aqua-ecosystem-map"
   role="img"
-  aria-label="Aquamarine, the channel client runtime, connects to the Beryl channel server over a WebSocket transport provided by Gluegun. Aquamarine uses the aquamarine/phoenix codec adapter, which builds on the Roost Phoenix frame library. The Beryl server also builds on Roost, which keeps their frame encoding in sync."
+  aria-label="Aquamarine, the channel client runtime, connects to the Beryl channel server over a WebSocket transport provided by Collie, which pushes inbound frames into Aquamarine's socket actor. Aquamarine uses the aquamarine/phoenix codec adapter, which builds on the Roost Phoenix frame library. The Beryl server also builds on Roost, which keeps their frame encoding in sync."
 >
   <svg class="aqua-diagram" viewBox="0 0 600 400" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
     <title>Beryl ecosystem package map</title>
@@ -54,8 +54,8 @@ neighbours does.
       marker-end="url(#aqua-dia-arrow)"
     />
     <!-- Edge labels -->
-    <text class="aqua-dia-label" x="300" y="70" text-anchor="middle">via Gluegun</text>
-    <text class="aqua-dia-label" x="300" y="104" text-anchor="middle">WebSocket</text>
+    <text class="aqua-dia-label" x="300" y="70" text-anchor="middle">WebSocket</text>
+    <text class="aqua-dia-label" x="300" y="104" text-anchor="middle">via Collie (push)</text>
     <text class="aqua-dia-label" x="150" y="170" text-anchor="start">uses codec</text>
     <text class="aqua-dia-label" x="150" y="330" text-anchor="start">builds on</text>
     <text class="aqua-dia-label" x="450" y="330" text-anchor="end">builds on</text>
@@ -93,15 +93,19 @@ neighbours does.
   of the ecosystem. A Phoenix-compatible channel server written in
   Gleam. Aquamarine talks to Beryl, but is not coupled to it — any
   Phoenix Channels–compatible server works.
-- **Aquamarine** — the protocol-agnostic client runtime. Owns the
-  channel lifecycle (connect, join, push, receive, heartbeat, close)
-  and delegates wire format decisions to a configurable codec.
+- **Aquamarine** — the protocol-agnostic client runtime. The socket
+  lives in an OTP actor that owns the connection, the ref counter, the
+  heartbeat, reconnect, and the per-topic routing table, and delegates
+  wire format decisions to a configurable codec.
 - **`aquamarine/phoenix`** — the bundled codec adapter that makes
   Aquamarine speak the Phoenix Channels wire format. See
   [Phoenix and Beryl](/guides/phoenix/) for usage.
-- **[Gluegun](https://github.com/tylerbutler/gluegun)** — the
-  underlying WebSocket transport library Aquamarine uses to actually
-  open the socket and move bytes.
+- **[Collie](https://hex.pm/packages/collie)** — the underlying
+  WebSocket client. It is push-shaped: inbound frames arrive at a
+  callback rather than being pulled, which is the shape Aquamarine's
+  socket actor wants. It passes the full Autobahn suite, reassembles
+  fragmented messages with explicit size caps, and applies system CA
+  certificates and hostname verification on the `wss` scheme.
 - **[Roost](https://github.com/tylerbutler/roost)** — the Phoenix
   frame library. Provides the canonical
   `[join_ref, ref, topic, event, payload]` encode/decode and the
@@ -117,6 +121,10 @@ The diagram above also shows what you can and cannot replace:
   channel runtime does not change.
 - **Server is pluggable.** Aquamarine has no compile-time dependency on
   Beryl. Anything that speaks the codec you configured will work.
-- **Transport is fixed.** Gluegun is currently the only transport
-  Aquamarine uses for production `connect` calls. The internal
-  `Transport` seam is `@internal` and exists for testing.
+- **Transport is swappable in principle, fixed in practice.** The
+  internal `Transport` seam is `@internal`: a `Connector` is handed a
+  sink subject at connect time and pushes every inbound frame into it,
+  and outbound sending is fire-and-forget. Collie is the only
+  implementation shipped, and the seam mainly exists so tests can drive
+  an in-memory transport — but it is a genuine seam, and swapping it was
+  how Aquamarine moved off its previous transport.
