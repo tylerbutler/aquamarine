@@ -1,7 +1,6 @@
 import starlight from "@astrojs/starlight";
 import a11yEmoji from "@fec/remark-a11y-emoji";
 import { defineConfig } from "astro/config";
-import mermaid from "astro-mermaid";
 import starlightHeadingBadges from "starlight-heading-badges";
 import starlightLinksValidator from "starlight-links-validator";
 import starlightLlmsTxt from "starlight-llms-txt";
@@ -14,9 +13,6 @@ export default defineConfig({
 		prefetchAll: true,
 	},
 	integrations: [
-		// astro-mermaid must come before starlight so its remark plugin runs
-		// against fenced ```mermaid blocks before Starlight processes them.
-		mermaid({ autoTheme: true }),
 		starlight({
 			title: "Aquamarine",
 			editLink: {
@@ -24,6 +20,51 @@ export default defineConfig({
 			},
 			description:
 				"Protocol-agnostic Beryl-style WebSocket channel client for Gleam on the BEAM.",
+			head: [
+				{
+					tag: "meta",
+					attrs: {
+						property: "og:image",
+						content: "https://aquamarine.tylerbutler.com/og-image.png",
+					},
+				},
+				{
+					tag: "meta",
+					attrs: {
+						property: "og:image:width",
+						content: "1200",
+					},
+				},
+				{
+					tag: "meta",
+					attrs: {
+						property: "og:image:height",
+						content: "630",
+					},
+				},
+				{
+					tag: "meta",
+					attrs: {
+						property: "og:image:alt",
+						content:
+							"Aquamarine: a clear channel runtime for Gleam.",
+					},
+				},
+				{
+					tag: "meta",
+					attrs: {
+						name: "twitter:card",
+						content: "summary_large_image",
+					},
+				},
+				{
+					tag: "meta",
+					attrs: {
+						name: "twitter:image",
+						content: "https://aquamarine.tylerbutler.com/og-image.png",
+					},
+				},
+			],
 			lastUpdated: true,
 			logo: {
 				src: "./src/assets/aquamarine-logo.webp",
@@ -31,7 +72,9 @@ export default defineConfig({
 			},
 			favicon: "favicon.png",
 			customCss: [
-				"@fontsource-variable/commissioner",
+				"@fontsource-variable/commissioner/wght.css",
+				"@fontsource-variable/sora/wght.css",
+				"@fontsource-variable/jetbrains-mono/wght.css",
 				"./src/styles/fonts.css",
 				"./src/styles/custom.css",
 			],

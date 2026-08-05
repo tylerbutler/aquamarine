@@ -9,10 +9,12 @@ pushing a message, receiving a reply, and shutting down.
 
 ## Install
 
-Add Aquamarine to your Gleam project:
+Aquamarine is pre-1.0 and is not published to Hex yet. Until it is, add it as
+a Git dependency in your `gleam.toml`:
 
-```sh
-gleam add aquamarine
+```toml
+[dependencies]
+aquamarine = { git = "https://github.com/tylerbutler/aquamarine.git", ref = "main" }
 ```
 
 Aquamarine targets the Erlang runtime — it relies on OTP actors for its
@@ -28,22 +30,34 @@ a `Channel` handle that you keep for the rest of the session.
 ```gleam
 import aquamarine
 import aquamarine/phoenix
+import gleam/io
 import gleam/json
 
 pub fn main() {
-  let assert Ok(channel) =
-    aquamarine.connect(
-      host: "localhost",
-      port: 4000,
-      path: "/socket/websocket",
-      topic: "room:lobby",
-      payload: json.object([]),
-      codec: phoenix.codec(),
-    )
+  case aquamarine.connect(
+    host: "localhost",
+    port: 4000,
+    path: "/socket/websocket",
+    topic: "room:lobby",
+    payload: json.object([]),
+    codec: phoenix.codec(),
+  ) {
+    Ok(channel) -> {
+      // ... use the channel ...
+      case aquamarine.close(channel) {
+        Ok(Nil) -> Nil
+        Error(error) -> {
+          io.debug(error)
+          Nil
+        }
+      }
+    }
 
-  // ... use the channel ...
-
-  let _ = aquamarine.close(channel)
+    Error(error) -> {
+      io.debug(error)
+      Nil
+    }
+  }
 }
 ```
 
@@ -77,7 +91,10 @@ case aquamarine.receive(channel) {
     // incoming.event, incoming.topic, incoming.payload, ...
     Nil
   }
-  Error(_) -> Nil
+  Error(error) -> {
+    io.debug(error)
+    Nil
+  }
 }
 ```
 
@@ -90,7 +107,13 @@ Only the process that called `connect` should call `receive` — see
 underlying socket.
 
 ```gleam
-let _ = aquamarine.close(channel)
+case aquamarine.close(channel) {
+  Ok(Nil) -> Nil
+  Error(error) -> {
+    io.debug(error)
+    Nil
+  }
+}
 ```
 
 ## Next steps
