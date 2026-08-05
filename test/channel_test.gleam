@@ -179,6 +179,45 @@ pub fn connect_with_propagates_a_send_side_error_on_the_join_frame_test() {
   fake.shutdown(f)
 }
 
+/// Regression test for the dropped-frame bug.
+///
+/// Under the old blocking `receive`, `await_join_reply` decoded every frame
+/// that was not the join reply and then discarded it by recursing — so a
+/// server push that arrived before the reply was silently lost. The socket
+/// actor has somewhere to put it: the events subject.
+pub fn a_push_arriving_before_the_join_reply_is_delivered_not_dropped_test() {
+  let f = fake.start()
+
+  // The server pushes first, and only then answers the join.
+  fake.enqueue_text(
+    f,
+    roost_frame.encode(
+      join_ref: None,
+      ref: None,
+      topic: test_topic,
+      event: "early",
+      payload: json.object([#("n", json.int(1))]),
+    ),
+  )
+  fake.enqueue_text(f, ok_join_reply("1"))
+
+  let assert Ok(ch) =
+    channel.connect_with(
+      fake.connector_for(f),
+      test_topic,
+      empty_payload(),
+      phoenix.codec(),
+      no_heartbeat,
+    )
+
+  let assert Ok(incoming) = channel.receive(ch)
+  assert incoming.event == "early"
+  assert decode_n(incoming.payload) == Ok(1)
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
 pub fn connect_with_skips_non_matching_frames_before_the_join_reply_test() {
   let f = fake.start()
   // Some unrelated server push arrives before the reply for ref "1".
@@ -229,8 +268,11 @@ pub fn push_encodes_the_topic_event_payload_and_a_fresh_ref_test() {
   let f = fake.start()
   let ch = connect_with_fake(f)
 
-  let assert Ok(Nil) =
-    channel.push(ch, "say", json.object([#("body", json.string("hi"))]))
+  channel.push(ch, "say", json.object([#("body", json.string("hi"))]))
+
+  // Push is fire-and-forget, so wait for the socket actor to hand the frame
+  // to the transport before asserting on it.
+  process.sleep(20)
 
   // outbound: [join, push]
   let assert [_, push_frame] = fake.outbound(f)
@@ -245,13 +287,17 @@ pub fn push_encodes_the_topic_event_payload_and_a_fresh_ref_test() {
   fake.shutdown(f)
 }
 
-pub fn push_maps_a_transport_send_failure_to_the_underlying_error_test() {
+pub fn push_surfaces_a_transport_send_failure_on_the_next_receive_test() {
   let f = fake.start()
   let ch = connect_with_fake(f)
 
   fake.enqueue_send_error(f, error.Transport(error.ConnectionDown("gone")))
 
-  assert channel.push(ch, "say", empty_payload())
+  // `push` cannot report the failure itself — it is fire-and-forget. A send
+  // that fails takes the socket down, and that is what the caller observes.
+  channel.push(ch, "say", empty_payload())
+
+  assert channel.receive(ch)
     == Error(error.Transport(error.ConnectionDown("gone")))
 
   let assert Ok(Nil) = channel.close(ch)

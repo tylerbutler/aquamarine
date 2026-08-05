@@ -10,10 +10,11 @@
 //// - observe whether the transport's `close` was called (`is_closed`).
 ////
 //// The transport seam is push-shaped: the sink `Subject(Frame)` only arrives
-//// when the connector runs. Frames enqueued before that are buffered and
-//// flushed the moment the sink is known, so a test can still script its
-//// inbound sequence up front — and, unlike the old pull model, can also
-//// deliver a frame at any point afterwards without the channel asking.
+//// when the connector runs. Frames enqueued before the channel has sent
+//// anything are buffered and released on its first outbound frame — a real
+//// server says nothing until it is spoken to, and a test that scripts a join
+//// reply up front means "reply to the join", not "shout it at connect time".
+//// Once released, frames are delivered the instant they are enqueued.
 ////
 //// `connector_for(fake)` returns a `Connector` to hand to
 //// `channel.connect_with`.
@@ -45,6 +46,7 @@ type State {
   State(
     sink: Option(Subject(Frame)),
     pending: List(Frame),
+    released: Bool,
     send_errors: List(AquamarineError),
     close_errors: List(AquamarineError),
     outbound: List(String),
@@ -57,6 +59,7 @@ pub fn start() -> FakeSocket {
     actor.new(State(
       sink: None,
       pending: [],
+      released: False,
       send_errors: [],
       close_errors: [],
       outbound: [],
@@ -120,22 +123,19 @@ pub fn failing_connector(err: AquamarineError) -> transport.Connector {
 fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
   case msg {
     Deliver(frame) ->
-      case state.sink {
-        Some(sink) -> {
+      case state.sink, state.released {
+        Some(sink), True -> {
           process.send(sink, frame)
           actor.continue(state)
         }
-        // Buffered until the connector hands us a sink.
-        None ->
+        // Buffered until there is a sink and the channel has spoken first.
+        _, _ ->
           actor.continue(
             State(..state, pending: list.append(state.pending, [frame])),
           )
       }
 
-    SetSink(sink) -> {
-      list.each(state.pending, process.send(sink, _))
-      actor.continue(State(..state, sink: Some(sink), pending: []))
-    }
+    SetSink(sink) -> actor.continue(flush(State(..state, sink: Some(sink))))
 
     ScriptSendError(err) ->
       actor.continue(
@@ -147,19 +147,20 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
         State(..state, close_errors: list.append(state.close_errors, [err])),
       )
 
-    DoSend(text, reply_to) ->
-      case state.send_errors {
+    DoSend(text, reply_to) -> {
+      let state = case state.send_errors {
         [err, ..rest] -> {
           process.send(reply_to, Error(err))
-          actor.continue(State(..state, send_errors: rest))
+          State(..state, send_errors: rest)
         }
         [] -> {
           process.send(reply_to, Ok(Nil))
-          actor.continue(
-            State(..state, outbound: list.append(state.outbound, [text])),
-          )
+          State(..state, outbound: list.append(state.outbound, [text]))
         }
       }
+      // The channel has spoken; the scripted server may now answer.
+      actor.continue(flush(State(..state, released: True)))
+    }
 
     DoClose(reply_to) ->
       case state.close_errors {
@@ -184,5 +185,16 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
     }
 
     Stop -> actor.stop()
+  }
+}
+
+/// Deliver everything buffered, if there is somewhere to deliver it to.
+fn flush(state: State) -> State {
+  case state.sink, state.released {
+    Some(sink), True -> {
+      list.each(state.pending, process.send(sink, _))
+      State(..state, pending: [])
+    }
+    _, _ -> state
   }
 }

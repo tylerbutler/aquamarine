@@ -21,11 +21,7 @@ pub fn connect(
 }
 
 /// Re-export of [`channel.push`](aquamarine/channel.html#push).
-pub fn push(
-  channel: Channel,
-  event: String,
-  payload: json.Json,
-) -> Result(Nil, AquamarineError) {
+pub fn push(channel: Channel, event: String, payload: json.Json) -> Nil {
   channel.push(channel, event, payload)
 }
 
