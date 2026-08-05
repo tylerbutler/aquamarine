@@ -37,6 +37,7 @@ pub opaque type Channel {
     events: Subject(socket.Event),
     topic: String,
     join_ref: String,
+    join_reply: Incoming,
   )
 }
 
@@ -84,6 +85,7 @@ pub fn connect_with(
     events: events,
     topic: topic,
     join_ref: joined.join_ref,
+    join_reply: joined.reply,
   ))
 }
 
@@ -95,6 +97,48 @@ pub fn connect_with(
 /// next [`receive`](#receive).
 pub fn push(channel: Channel, event: String, payload: json.Json) -> Nil {
   socket.push(channel.socket, channel.join_ref, channel.topic, event, payload)
+}
+
+/// Push an event and block until the server's reply to it arrives.
+///
+/// The reply is correlated by ref, so concurrent pushes from different
+/// processes each get their own. Frames that arrive while waiting are
+/// delivered to [`receive`](#receive) as usual — they are not dropped.
+///
+/// Returns `Error(ReplyTimeout)` if no reply arrives within `timeout`, and
+/// `Error(ChannelClosed)` if the socket goes away first. A reply carrying a
+/// non-ok status is an ordinary `Ok` — interpreting it is the caller's job.
+pub fn push_and_await_reply(
+  channel: Channel,
+  event: String,
+  payload: json.Json,
+  timeout: Int,
+) -> Result(Incoming, AquamarineError) {
+  socket.push_and_await_reply(
+    channel.socket,
+    channel.join_ref,
+    channel.topic,
+    event,
+    payload,
+    timeout,
+  )
+}
+
+/// The reply the server accepted the join with.
+///
+/// Lets a caller inspect the live join payload — what the server actually
+/// answered — rather than having to re-decode frames or fabricate it.
+pub fn join_reply(channel: Channel) -> Incoming {
+  channel.join_reply
+}
+
+/// The subject inbound events are delivered on.
+///
+/// [`receive`](#receive) is the easy path and stays the right answer for
+/// scripts and CLIs. This is for callers who already have an OTP application
+/// and want to select on channel events alongside their own messages.
+pub fn events(channel: Channel) -> Subject(socket.Event) {
+  channel.events
 }
 
 /// Receive the next inbound event on the channel.

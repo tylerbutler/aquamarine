@@ -84,6 +84,55 @@ pub fn round_trips_a_client_push_through_the_public_facade_test() {
   let assert Ok(Nil) = aquamarine.close(ch)
 }
 
+pub fn awaits_a_correlated_reply_through_the_public_facade_test() {
+  let server = start_server()
+
+  let assert Ok(ch) =
+    aquamarine.connect(
+      host: "127.0.0.1",
+      port: server.port,
+      path: test_path,
+      topic: "test:echo",
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    )
+
+  let assert Ok(incoming) =
+    aquamarine.push_and_await_reply(
+      ch,
+      "say",
+      json.object([#("body", json.string("correlated"))]),
+      5000,
+    )
+  assert incoming.event == phoenix.codec().reply_event
+  assert decode_body(incoming.payload) == Ok("correlated")
+
+  let assert Ok(Nil) = aquamarine.close(ch)
+}
+
+/// #8: a caller can assert the live accepted join payload without inspecting
+/// raw frames or fabricating one. `test:lobby` accepts with `{welcome: true}`.
+pub fn exposes_the_live_accepted_join_reply_test() {
+  let server = start_server()
+
+  let assert Ok(ch) =
+    aquamarine.connect(
+      host: "127.0.0.1",
+      port: server.port,
+      path: test_path,
+      topic: "test:lobby",
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    )
+
+  let reply = aquamarine.join_reply(ch)
+  assert reply.topic == "test:lobby"
+  assert reply.event == phoenix.codec().reply_event
+  assert decode_welcome(reply.payload) == Ok(True)
+
+  let assert Ok(Nil) = aquamarine.close(ch)
+}
+
 pub fn surfaces_a_server_side_join_rejection_test() {
   let server = start_server()
 
@@ -193,6 +242,15 @@ fn decode_n(payload) -> Result(Int, Nil) {
   let decoder = {
     use n <- decode.field("n", decode.int)
     decode.success(n)
+  }
+  decode.run(payload, decoder)
+  |> result.map_error(fn(_) { Nil })
+}
+
+fn decode_welcome(payload) -> Result(Bool, Nil) {
+  let decoder = {
+    use welcome <- decode.subfield(["response", "welcome"], decode.bool)
+    decode.success(welcome)
   }
   decode.run(payload, decoder)
   |> result.map_error(fn(_) { Nil })

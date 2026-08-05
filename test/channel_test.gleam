@@ -7,6 +7,7 @@
 //// frame classes that `receive` must skip or terminate on.
 
 import aquamarine/channel
+import aquamarine/codec
 import aquamarine/error
 import aquamarine/phoenix
 import gleam/dynamic/decode
@@ -453,6 +454,251 @@ fn ref_of(frame: String) -> option.Option(String) {
 fn event_of(frame: String) -> String {
   let assert Ok(decoded) = phoenix.codec().decode(frame)
   decoded.event
+}
+
+// -- channel.push_and_await_reply -------------------------------------------
+
+pub fn push_and_await_reply_returns_the_matching_reply_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
+
+  // The push will go out under ref "2"; answer it.
+  spawn_reply(f, "2", json.object([#("pong", json.bool(True))]))
+
+  let assert Ok(incoming) =
+    channel.push_and_await_reply(ch, "ping", empty_payload(), 500)
+  assert incoming.ref == Some("2")
+  assert incoming.event == roost_frame.reply_event
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+/// Two processes push at once. Each must get its own reply, not the other's —
+/// which is the thing a single blocking `receive` could not do.
+pub fn concurrent_pushes_each_get_their_own_reply_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
+  let results = process.new_subject()
+
+  process.spawn(fn() {
+    process.send(results, #(
+      "a",
+      channel.push_and_await_reply(ch, "a", empty_payload(), 1000),
+    ))
+  })
+  process.spawn(fn() {
+    process.send(results, #(
+      "b",
+      channel.push_and_await_reply(ch, "b", empty_payload(), 1000),
+    ))
+  })
+
+  // Let both register, then answer both refs out of order.
+  process.sleep(30)
+  reply_to_ref(f, "3", json.object([#("who", json.string("three"))]))
+  reply_to_ref(f, "2", json.object([#("who", json.string("two"))]))
+
+  let assert Ok(#(_, first)) = process.receive(results, 1000)
+  let assert Ok(#(_, second)) = process.receive(results, 1000)
+
+  // Whichever order they finish in, each reply carries the ref it asked for.
+  let assert Ok(one) = first
+  let assert Ok(two) = second
+  assert one.ref != two.ref
+  assert reply_who(one) == expected_who(one)
+  assert reply_who(two) == expected_who(two)
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+pub fn frames_arriving_between_a_push_and_its_reply_reach_the_subscriber_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
+
+  process.spawn(fn() {
+    // Unrelated server push first, then the reply the caller is waiting on.
+    process.sleep(20)
+    fake.enqueue_text(
+      f,
+      roost_frame.encode(
+        join_ref: None,
+        ref: None,
+        topic: test_topic,
+        event: "interleaved",
+        payload: empty_payload(),
+      ),
+    )
+    reply_to_ref(f, "2", empty_payload())
+  })
+
+  let assert Ok(_) =
+    channel.push_and_await_reply(ch, "ping", empty_payload(), 1000)
+
+  // The interleaved frame was not dropped to make room for the reply.
+  let assert Ok(incoming) = channel.receive(ch)
+  assert incoming.event == "interleaved"
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+/// A caller that gives up must not leave an entry behind. Observable: the late
+/// reply falls through to the subscriber instead of being swallowed by a stale
+/// pending entry.
+pub fn a_reply_timeout_drops_the_pending_entry_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
+
+  assert channel.push_and_await_reply(ch, "ping", empty_payload(), 50)
+    == Error(error.ReplyTimeout)
+
+  // Give the cancel a moment to land, then deliver the late reply.
+  process.sleep(20)
+  reply_to_ref(f, "2", empty_payload())
+
+  let assert Ok(incoming) = channel.receive(ch)
+  assert incoming.ref == Some("2")
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+pub fn losing_the_socket_fails_every_pending_waiter_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
+  let results = process.new_subject()
+
+  process.spawn(fn() {
+    process.send(
+      results,
+      channel.push_and_await_reply(ch, "a", empty_payload(), 5000),
+    )
+  })
+  process.spawn(fn() {
+    process.send(
+      results,
+      channel.push_and_await_reply(ch, "b", empty_payload(), 5000),
+    )
+  })
+
+  process.sleep(30)
+  fake.enqueue_closed(f)
+
+  // Both waiters are failed promptly — neither runs to its 5s timeout.
+  assert process.receive(results, 500) == Ok(Error(error.ChannelClosed))
+  assert process.receive(results, 500) == Ok(Error(error.ChannelClosed))
+
+  fake.shutdown(f)
+}
+
+/// A codec that cannot correlate — `matches_reply` always False — must not
+/// hang a caller. It degrades to "no reply available" at the timeout.
+pub fn a_codec_that_cannot_correlate_degrades_to_reply_timeout_test() {
+  let f = fake.start()
+  let codec = uncorrelating_codec()
+
+  fake.enqueue_text(f, ok_join_reply("1"))
+  // The join itself cannot correlate either, so connect times out rather than
+  // blocking forever.
+  assert channel.connect_with(
+      fake.connector_for(f),
+      test_topic,
+      empty_payload(),
+      codec,
+      no_heartbeat,
+    )
+    == Error(error.ReplyTimeout)
+
+  fake.shutdown(f)
+}
+
+// -- #8: the accepted join reply --------------------------------------------
+
+pub fn connect_exposes_the_accepted_join_reply_test() {
+  let f = fake.start()
+  fake.enqueue_text(
+    f,
+    roost_frame.encode_reply(
+      join_ref: Some("1"),
+      ref: "1",
+      topic: test_topic,
+      status: roost_frame.StatusOk,
+      response: json.object([#("n", json.int(99))]),
+    ),
+  )
+  let assert Ok(ch) =
+    channel.connect_with(
+      fake.connector_for(f),
+      test_topic,
+      empty_payload(),
+      phoenix.codec(),
+      no_heartbeat,
+    )
+
+  let reply = channel.join_reply(ch)
+  assert reply.topic == test_topic
+  assert reply.event == roost_frame.reply_event
+  assert decode_response_n(reply.payload) == Ok(99)
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+// -- helpers for reply correlation ------------------------------------------
+
+/// Deliver a `phx_reply` for `ref` immediately.
+fn reply_to_ref(f: fake.FakeSocket, ref: String, response: json.Json) -> Nil {
+  fake.enqueue_text(
+    f,
+    roost_frame.encode_reply(
+      join_ref: Some("1"),
+      ref: ref,
+      topic: test_topic,
+      status: roost_frame.StatusOk,
+      response: response,
+    ),
+  )
+}
+
+/// Deliver a reply once the caller has had a chance to register.
+fn spawn_reply(f: fake.FakeSocket, ref: String, response: json.Json) -> Nil {
+  process.spawn(fn() {
+    process.sleep(20)
+    reply_to_ref(f, ref, response)
+  })
+  Nil
+}
+
+fn reply_who(incoming: codec.Incoming) -> Result(String, Nil) {
+  decode.run(incoming.payload, decode.at(["response", "who"], decode.string))
+  |> result.map_error(fn(_) { Nil })
+}
+
+/// Refs "2" and "3" were answered with "two" and "three" respectively.
+fn expected_who(incoming: codec.Incoming) -> Result(String, Nil) {
+  case incoming.ref {
+    Some("2") -> Ok("two")
+    Some("3") -> Ok("three")
+    _ -> Error(Nil)
+  }
+}
+
+fn decode_response_n(payload) -> Result(Int, Nil) {
+  let decoder = {
+    use n <- decode.field("response", decode.at(["n"], decode.int))
+    decode.success(n)
+  }
+  decode.run(payload, decoder)
+  |> result.map_error(fn(_) { Nil })
+}
+
+/// A codec identical to Phoenix's except that it can never decide whether a
+/// frame is the reply to a given ref.
+fn uncorrelating_codec() -> codec.Codec {
+  let base = phoenix.codec()
+  codec.Codec(..base, matches_reply: fn(_incoming, _ref) { False })
 }
 
 // -- channel.receive --------------------------------------------------------
