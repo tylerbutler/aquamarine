@@ -33,9 +33,9 @@ pub opaque type FakeSocket {
 pub opaque type Message {
   Deliver(Frame)
   SetSink(Subject(Frame))
-  ScriptSendError(AquamarineError)
+  ScriptSendFailure
   ScriptCloseError(AquamarineError)
-  DoSend(text: String, reply_to: Subject(Result(Nil, AquamarineError)))
+  DoSend(text: String)
   DoClose(reply_to: Subject(Result(Nil, AquamarineError)))
   Outbound(reply_to: Subject(List(String)))
   IsClosed(reply_to: Subject(Bool))
@@ -47,7 +47,7 @@ type State {
     sink: Option(Subject(Frame)),
     pending: List(Frame),
     released: Bool,
-    send_errors: List(AquamarineError),
+    send_failures: Int,
     close_errors: List(AquamarineError),
     outbound: List(String),
     closed: Bool,
@@ -60,7 +60,7 @@ pub fn start() -> FakeSocket {
       sink: None,
       pending: [],
       released: False,
-      send_errors: [],
+      send_failures: 0,
       close_errors: [],
       outbound: [],
       closed: False,
@@ -104,8 +104,13 @@ pub fn enqueue_closed(fake: FakeSocket) -> Nil {
   process.send(fake.subject, Deliver(transport.Closed))
 }
 
-pub fn enqueue_send_error(fake: FakeSocket, err: AquamarineError) -> Nil {
-  process.send(fake.subject, ScriptSendError(err))
+/// Script the next outbound send to fail, taking the connection with it.
+///
+/// Sending is fire-and-forget now, so a failure is not something the caller
+/// hears about — it arrives as the connection closing, which is what the real
+/// transport does too.
+pub fn fail_next_send(fake: FakeSocket) -> Nil {
+  process.send(fake.subject, ScriptSendFailure)
 }
 
 pub fn enqueue_close_error(fake: FakeSocket, err: AquamarineError) -> Nil {
@@ -122,7 +127,7 @@ pub fn is_closed(fake: FakeSocket) -> Bool {
 
 pub fn transport(fake: FakeSocket) -> Transport {
   transport.Transport(
-    send_text: fn(text) { process.call(fake.subject, 1000, DoSend(text, _)) },
+    send_text: fn(text) { process.send(fake.subject, DoSend(text)) },
     close: fn() { process.call(fake.subject, 1000, DoClose) },
   )
 }
@@ -155,25 +160,25 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
 
     SetSink(sink) -> actor.continue(flush(State(..state, sink: Some(sink))))
 
-    ScriptSendError(err) ->
-      actor.continue(
-        State(..state, send_errors: list.append(state.send_errors, [err])),
-      )
+    ScriptSendFailure ->
+      actor.continue(State(..state, send_failures: state.send_failures + 1))
 
     ScriptCloseError(err) ->
       actor.continue(
         State(..state, close_errors: list.append(state.close_errors, [err])),
       )
 
-    DoSend(text, reply_to) -> {
-      let state = case state.send_errors {
-        [err, ..rest] -> {
-          process.send(reply_to, Error(err))
-          State(..state, send_errors: rest)
-        }
-        [] -> {
-          process.send(reply_to, Ok(Nil))
-          State(..state, outbound: list.append(state.outbound, [text]))
+    DoSend(text) -> {
+      // A send that fails takes the connection down. That is all the socket
+      // can observe now — there is no synchronous answer to give it.
+      let state = case state.send_failures {
+        0 -> State(..state, outbound: list.append(state.outbound, [text]))
+        n -> {
+          case state.sink {
+            Some(sink) -> process.send(sink, transport.Closed)
+            None -> Nil
+          }
+          State(..state, send_failures: n - 1, closed: True)
         }
       }
       // The channel has spoken; the scripted server may now answer.

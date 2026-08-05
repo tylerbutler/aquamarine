@@ -10,10 +10,12 @@
 import aquamarine/channel.{type Channel}
 import aquamarine/codec.{type Codec, type Incoming}
 import aquamarine/error.{type AquamarineError}
+import aquamarine/transport
 import gleam/json
 
 /// Re-export of [`channel.connect`](aquamarine/channel.html#connect).
 pub fn connect(
+  scheme scheme: transport.Scheme,
   host host: String,
   port port: Int,
   path path: String,
@@ -21,7 +23,7 @@ pub fn connect(
   payload payload: json.Json,
   codec codec: Codec,
 ) -> Result(Channel, AquamarineError) {
-  channel.connect(host:, port:, path:, topic:, payload:, codec:)
+  channel.connect(scheme:, host:, port:, path:, topic:, payload:, codec:)
 }
 
 /// Re-export of [`channel.push`](aquamarine/channel.html#push).

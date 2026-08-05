@@ -1,37 +1,42 @@
 //// Internal WebSocket transport seam.
 ////
-//// `aquamarine/channel` does not call Gluegun directly; it operates on a
-//// `Transport` value that exposes the two outbound operations the channel
-//// lifecycle needs: `send_text` and `close`.
+//// `aquamarine/socket` does not call Collie directly; it operates on a
+//// `Transport` value that exposes the two outbound operations the socket
+//// needs: `send_text` and `close`.
 ////
 //// Inbound frames are *pushed*: a `Connector` is handed a sink
 //// `process.Subject(Frame)` at connect time and delivers every inbound frame
 //// into it, including the terminal [`Closed`](#Frame). Nothing pulls.
 ////
-//// Production code uses [`gluegun_connector`](#gluegun_connector) to build
-//// a Gluegun-backed `Transport`. Tests can build an in-memory `Transport`
-//// to script inbound frames and observe outbound frames deterministically.
+//// Sending is fire-and-forget and returns nothing. A send that fails takes
+//// the connection down, which arrives on the sink as `Closed` — the socket
+//// actor is going to treat it that way regardless, and not needing a
+//// synchronous answer is what keeps the outbound path to a single hop into
+//// Collie's actor. Closing does report, because it happens once and the
+//// caller has somewhere to put the answer.
+////
+//// Production code uses [`collie_connector`](#collie_connector). Tests build
+//// an in-memory `Transport` to script inbound frames and observe outbound
+//// frames deterministically.
 ////
 //// The whole module is `@internal` — it is reachable from tests in this
 //// repo but not part of the public Aquamarine API surface.
 
 import aquamarine/error.{type AquamarineError}
+import collie
 import gleam/erlang/process.{type Subject}
-import gleam/result
-import gluegun/error as gluegun_error
-import gluegun/message
-import gluegun/websocket
+import gleam/http
+import gleam/http/request
+import gleam/otp/actor
+import gleam/string
 
-/// How long to wait for the reader process to report the result of its
-/// connect attempt. Gluegun applies its own 5s timeout to each step of the
-/// handshake, so this only has to be generous enough not to pre-empt it.
-const connect_timeout_ms: Int = 30_000
+/// How long to wait for Collie to answer a close.
+const close_timeout_ms: Int = 5000
 
-/// Application-level frame surfaced to the channel layer.
+/// Application-level frame surfaced to the socket actor.
 ///
-/// Gluegun's `receive_app_frame` already answers pings and skips pongs, so
-/// the channel only ever needs to distinguish text, binary, and "the socket
-/// is gone" frames.
+/// Collie answers pings and reassembles fragments itself, so the socket only
+/// ever needs to distinguish text, binary, and "the connection is gone".
 @internal
 pub type Frame {
   Text(text: String)
@@ -39,128 +44,183 @@ pub type Frame {
   Closed
 }
 
-/// Transport bound to a single, already-open WebSocket socket.
+/// Whether to speak plaintext or TLS.
+///
+/// `Wss` gets system CA certificates and HTTPS hostname verification by
+/// default; there is no escape hatch for self-signed certificates.
+pub type Scheme {
+  Ws
+  Wss
+}
+
+/// Transport bound to a single, already-open WebSocket connection.
 ///
 /// Outbound only. Inbound frames arrive on the sink subject the `Connector`
 /// was given.
 @internal
 pub type Transport {
   Transport(
-    send_text: fn(String) -> Result(Nil, AquamarineError),
+    send_text: fn(String) -> Nil,
     close: fn() -> Result(Nil, AquamarineError),
   )
 }
 
-/// A function that opens a transport. `channel.connect_with` takes one of
-/// these so production and test paths share the same connect-time error
-/// handling.
+/// A function that opens a transport. `socket.start` takes one of these so
+/// production and test paths share the same connect-time error handling.
 ///
 /// Takes the sink that inbound frames should be delivered to.
 @internal
 pub type Connector =
   fn(Subject(Frame)) -> Result(Transport, AquamarineError)
 
-/// Build a Gluegun-backed connector for the given host/port/path.
+/// Messages we send into Collie's actor. The `Connection` handle only exists
+/// inside Collie's own handler, so everything outbound goes through here.
+type Command {
+  SendText(text: String)
+  Close(reply_to: Subject(Result(Nil, AquamarineError)))
+}
+
+/// Build a Collie-backed connector.
 @internal
-pub fn gluegun_connector(
+pub fn collie_connector(
+  scheme scheme: Scheme,
   host host: String,
   port port: Int,
   path path: String,
 ) -> Connector {
   fn(sink: Subject(Frame)) {
-    let ready = process.new_subject()
-    let _ = process.spawn(fn() { reader(host, port, path, sink, ready) })
+    let req =
+      request.new()
+      |> request.set_scheme(case scheme {
+        Ws -> http.Http
+        Wss -> http.Https
+      })
+      |> request.set_host(host)
+      |> request.set_port(port)
+      |> request.set_path(path)
+      |> request.set_body("")
 
-    case process.receive(ready, connect_timeout_ms) {
-      Ok(Ok(socket)) -> Ok(from_socket(socket))
-      Ok(Error(err)) -> Error(err)
-      Error(Nil) -> Error(error.Transport(error.Timeout))
+    let started =
+      collie.new(req, Nil)
+      |> collie.on_message(fn(conn, state, message) {
+        case message {
+          collie.Text(text) -> {
+            process.send(sink, Text(text))
+            collie.continue(state)
+          }
+          collie.Binary(data) -> {
+            process.send(sink, Binary(data))
+            collie.continue(state)
+          }
+          collie.User(SendText(text)) ->
+            case collie.send_text_frame(conn, text) {
+              Ok(Nil) -> collie.continue(state)
+              // A send that fails means the connection is gone. Stop; the
+              // close handler tells the sink.
+              Error(_) -> collie.stop()
+            }
+          collie.User(Close(reply_to)) -> {
+            let result = case
+              collie.send_close_frame(
+                conn,
+                collie.CloseReason(collie.NormalClosure, ""),
+              )
+            {
+              Ok(Nil) -> Ok(Nil)
+              Error(reason) -> Error(from_socket_reason(reason))
+            }
+            process.send(reply_to, result)
+            collie.stop()
+          }
+        }
+      })
+      // Fires however the connection ends — peer close, protocol error, or a
+      // send that could not go out.
+      |> collie.on_close(fn(_state, _reason) { process.send(sink, Closed) })
+      |> collie.start
+
+    case started {
+      Ok(started) -> Ok(from_collie(started.data))
+      Error(err) -> Error(from_start_error(err))
     }
   }
 }
 
-/// Temporary reader-process shim. See the epic at
-/// <https://github.com/tylerbutler/aquamarine/issues/13>.
-///
-/// Gluegun's read side is pull-shaped, and Gun delivers frames to the process
-/// that *owns* the connection — so the only way to push frames into a sink is
-/// to open the connection inside a dedicated process and forward from there.
-/// The socket value is handed back to the caller over `ready` because sending
-/// and closing are safe from any process; only receiving is owner-bound.
-///
-/// This shim is scaffolding. It is deleted by the Collie swap in Phase 3
-/// (<https://github.com/tylerbutler/aquamarine/issues/22>), where the client
-/// is push-shaped natively and no forwarding process is needed.
-fn reader(
-  host: String,
-  port: Int,
-  path: String,
-  sink: Subject(Frame),
-  ready: Subject(Result(websocket.Socket, AquamarineError)),
-) -> Nil {
-  case websocket.connect(host:, port:, path:, options: websocket.options()) {
-    Error(err) -> process.send(ready, Error(from_gluegun(err)))
-    Ok(socket) -> {
-      process.send(ready, Ok(socket))
-      read_loop(socket, sink)
-    }
-  }
-}
-
-/// Forward inbound frames into the sink until the socket ends.
-///
-/// A frame timeout is not the socket dying — Gluegun applies its 5s receive
-/// timeout to every call, so an idle connection would otherwise be reported
-/// as closed. Keep looping on `Timeout`; treat every other error as the end.
-fn read_loop(socket: websocket.Socket, sink: Subject(Frame)) -> Nil {
-  case websocket.receive_app_frame(socket) {
-    Ok(message.Text(text)) -> {
-      process.send(sink, Text(text))
-      read_loop(socket, sink)
-    }
-    Ok(message.Binary(data)) -> {
-      process.send(sink, Binary(data))
-      read_loop(socket, sink)
-    }
-    Error(gluegun_error.Timeout) -> read_loop(socket, sink)
-    // Close, CloseWithReason, and — defensively — the ping/pong arms that
-    // receive_app_frame already handles, all mean "no more app frames".
-    Ok(_) | Error(_) -> process.send(sink, Closed)
-  }
-}
-
-/// Wrap a live Gluegun socket in a `Transport`.
-fn from_socket(socket: websocket.Socket) -> Transport {
+/// Wrap a live Collie client in a `Transport`.
+fn from_collie(client: Subject(collie.WebsocketMessage(Command))) -> Transport {
   Transport(
     send_text: fn(text) {
-      websocket.send_text(socket, text)
-      |> result.map_error(from_gluegun)
+      process.send(client, collie.to_user_message(SendText(text)))
     },
     close: fn() {
-      websocket.close(socket)
-      |> result.map_error(from_gluegun)
+      let reply_to = process.new_subject()
+      process.send(client, collie.to_user_message(Close(reply_to)))
+      case process.receive(reply_to, close_timeout_ms) {
+        Ok(result) -> result
+        Error(Nil) -> Error(error.Transport(error.Timeout))
+      }
     },
   )
 }
 
-/// Map a Gluegun error onto Aquamarine's transport-error surface.
+/// Map a Collie socket failure onto Aquamarine's transport-error surface.
+///
+/// Collie names about thirty POSIX conditions. Rather than mirror all of them,
+/// classify into the handful a caller can act on differently and keep Collie's
+/// own name for the rest — a caller who wants the detail still has it, and one
+/// who wants to branch is not forced to enumerate `Enopkg`.
 @internal
-pub fn from_gluegun(err: gluegun_error.GluegunError) -> AquamarineError {
+pub fn from_socket_reason(reason: collie.SocketReason) -> AquamarineError {
+  case reason {
+    collie.Closed -> error.Transport(error.Closed)
+    collie.Timeout | collie.Etimedout -> error.Transport(error.Timeout)
+    collie.Econnrefused -> error.Transport(error.ConnectionRefused)
+    collie.Ehostunreach
+    | collie.Ehostdown
+    | collie.Enetunreach
+    | collie.Enetdown
+    | collie.Eaddrnotavail ->
+      error.Transport(error.Unreachable(collie.socket_reason_to_string(reason)))
+    collie.Econnreset | collie.Econnaborted | collie.Enotconn ->
+      error.Transport(
+        error.ConnectionLost(collie.socket_reason_to_string(reason)),
+      )
+    _ ->
+      error.Transport(error.SocketError(collie.socket_reason_to_string(reason)))
+  }
+}
+
+/// Map a WebSocket close reason onto Aquamarine's transport-error surface.
+@internal
+pub fn from_close_reason(reason: collie.CloseReason) -> AquamarineError {
+  case reason {
+    collie.NoCloseReason -> error.Transport(error.Closed)
+    collie.CloseReason(code, detail) ->
+      error.Transport(error.ClosedWith(
+        code: collie.close_code_to_string(code),
+        reason: detail,
+      ))
+  }
+}
+
+/// Map a failure to start Collie's client.
+///
+/// Connect-time classification is coarse: the handshake runs inside Collie's
+/// initialiser, so a refused connection and a rejected upgrade both arrive as
+/// `InitFailed` carrying a message. The message is kept rather than flattened
+/// away.
+@internal
+pub fn from_start_error(err: actor.StartError) -> AquamarineError {
   case err {
-    gluegun_error.Timeout -> error.Transport(error.Timeout)
-    gluegun_error.ConnectionDown(reason) ->
-      error.Transport(error.ConnectionDown(reason))
-    gluegun_error.ConnectionError(reason) ->
-      error.Transport(error.ConnectionError(reason))
-    gluegun_error.StreamError(reason) ->
-      error.Transport(error.StreamError(reason))
-    gluegun_error.InvalidOptions(reason) ->
-      error.Transport(error.InvalidOptions(reason))
-    gluegun_error.InvalidMessage(reason) ->
-      error.Transport(error.InvalidMessage(reason))
-    gluegun_error.ErlangError(reason) ->
-      error.Transport(error.ErlangError(reason))
-    gluegun_error.DecodeError(reason) ->
-      error.Transport(error.DecodeError(reason))
+    actor.InitTimeout -> error.Transport(error.Timeout)
+    actor.InitFailed(reason) -> error.Transport(error.ConnectFailed(reason))
+    actor.InitExited(process.Normal) ->
+      error.Transport(error.ConnectFailed(
+        "client exited normally while connecting",
+      ))
+    actor.InitExited(process.Killed) ->
+      error.Transport(error.ConnectFailed("client was killed while connecting"))
+    actor.InitExited(process.Abnormal(reason)) ->
+      error.Transport(error.ConnectFailed(string.inspect(reason)))
   }
 }

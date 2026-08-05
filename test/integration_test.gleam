@@ -8,6 +8,7 @@ import aquamarine/channel
 import aquamarine/error
 import aquamarine/phoenix
 import aquamarine/socket
+import aquamarine/transport
 import beryl
 import beryl/channel as bchannel
 import beryl/supervisor
@@ -22,6 +23,7 @@ import gleam/option.{Some}
 import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/result
+import gleam/string
 import mist
 
 const test_path: String = "/socket/websocket"
@@ -36,6 +38,7 @@ pub fn joins_a_channel_and_receives_a_server_push_test() {
 
   let assert Ok(ch) =
     channel.connect(
+      scheme: transport.Ws,
       host: "127.0.0.1",
       port: server.port,
       path: test_path,
@@ -67,6 +70,7 @@ pub fn round_trips_a_client_push_through_the_public_facade_test() {
 
   let assert Ok(ch) =
     aquamarine.connect(
+      scheme: transport.Ws,
       host: "127.0.0.1",
       port: server.port,
       path: test_path,
@@ -90,6 +94,7 @@ pub fn awaits_a_correlated_reply_through_the_public_facade_test() {
 
   let assert Ok(ch) =
     aquamarine.connect(
+      scheme: transport.Ws,
       host: "127.0.0.1",
       port: server.port,
       path: test_path,
@@ -118,6 +123,7 @@ pub fn exposes_the_live_accepted_join_reply_test() {
 
   let assert Ok(ch) =
     aquamarine.connect(
+      scheme: transport.Ws,
       host: "127.0.0.1",
       port: server.port,
       path: test_path,
@@ -141,6 +147,7 @@ pub fn serves_two_topics_over_one_socket_test() {
 
   let assert Ok(sock) =
     socket.connect(
+      scheme: transport.Ws,
       host: "127.0.0.1",
       port: server.port,
       path: test_path,
@@ -194,6 +201,7 @@ pub fn rejects_a_duplicate_join_on_one_socket_test() {
 
   let assert Ok(sock) =
     socket.connect(
+      scheme: transport.Ws,
       host: "127.0.0.1",
       port: server.port,
       path: test_path,
@@ -207,10 +215,47 @@ pub fn rejects_a_duplicate_join_on_one_socket_test() {
   let assert Ok(Nil) = socket.close(sock)
 }
 
+/// A payload far larger than one TCP segment, echoed back and compared byte
+/// for byte. Reassembling a message that arrives across many reads is the
+/// specific area where the previous transport candidate fell down, so it is
+/// worth asserting against a real server rather than trusting the claim.
+///
+/// This covers multi-*packet* reassembly. WebSocket continuation frames are a
+/// separate mechanism, and whether one is exercised here depends on Mist's
+/// choice to fragment, which we do not control.
+pub fn round_trips_a_payload_larger_than_one_read_test() {
+  let server = start_server()
+
+  let assert Ok(ch) =
+    aquamarine.connect(
+      scheme: transport.Ws,
+      host: "127.0.0.1",
+      port: server.port,
+      path: test_path,
+      topic: "test:echo",
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    )
+
+  let big = string.repeat("aquamarine-0123456789-", 8000)
+
+  let assert Ok(incoming) =
+    aquamarine.push_and_await_reply(
+      ch,
+      "say",
+      json.object([#("body", json.string(big))]),
+      10_000,
+    )
+  assert decode_body(incoming.payload) == Ok(big)
+
+  let assert Ok(Nil) = aquamarine.close(ch)
+}
+
 pub fn surfaces_a_server_side_join_rejection_test() {
   let server = start_server()
 
   assert channel.connect(
+      scheme: transport.Ws,
       host: "127.0.0.1",
       port: server.port,
       path: test_path,

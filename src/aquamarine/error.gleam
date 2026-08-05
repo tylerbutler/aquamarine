@@ -6,15 +6,32 @@
 
 import aquamarine/codec
 
+/// WebSocket transport failures, classified.
+///
+/// The transport names about thirty POSIX socket conditions. Rather than
+/// mirror all of them, this classifies the handful a caller can act on
+/// differently and keeps the underlying name as a string for the rest — the
+/// detail is still there for anyone who wants it, and nobody branching on
+/// "did the connection drop?" has to enumerate `Enopkg`.
 pub type TransportError {
+  /// The connection is closed. Nothing to retry against.
+  Closed
+  /// The WebSocket closed with a protocol close code.
+  ClosedWith(code: String, reason: String)
+  /// A socket operation exceeded its timeout.
   Timeout
-  ConnectionDown(reason: String)
-  ConnectionError(reason: String)
-  StreamError(reason: String)
-  InvalidOptions(reason: String)
-  InvalidMessage(reason: String)
-  ErlangError(reason: String)
-  DecodeError(reason: String)
+  /// Nothing is listening on the other end.
+  ConnectionRefused
+  /// The host or network could not be reached.
+  Unreachable(reason: String)
+  /// An established connection was dropped underneath us.
+  ConnectionLost(reason: String)
+  /// The connection could not be established: refused handshake, rejected
+  /// upgrade, TLS failure. Connect-time classification is coarse because the
+  /// handshake happens inside the client's own initialiser.
+  ConnectFailed(reason: String)
+  /// Any other socket-level failure, carrying the transport's own name for it.
+  SocketError(reason: String)
 }
 
 pub type AquamarineError {
