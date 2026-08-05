@@ -6,25 +6,32 @@
 ////
 //// ## Process ownership
 ////
-//// The transport is owned by the process that called [`connect`](#connect).
-//// Only that process may call [`receive`](#receive). [`push`](#push) and
-//// [`close`](#close) are safe to call from any process, since the underlying
-//// `send_text` is fire-and-forget.
+//// The inbound frame subject is owned by the process that called
+//// [`connect`](#connect). Only that process may call [`receive`](#receive).
+//// [`push`](#push) and [`close`](#close) are safe to call from any process,
+//// since the underlying `send_text` is fire-and-forget.
 
 import aquamarine/codec.{type Codec, type Incoming}
 import aquamarine/error.{type AquamarineError}
 import aquamarine/heartbeat
 import aquamarine/ref
-import aquamarine/transport.{type Connector, type Transport}
+import aquamarine/transport.{type Connector, type Frame, type Transport}
+import gleam/erlang/process.{type Subject}
 import gleam/json
 import gleam/result
 
 /// Default heartbeat interval, matching the Phoenix JS client.
 const default_heartbeat_ms: Int = 30_000
 
+/// How long [`receive`](#receive) waits for the next inbound frame before
+/// reporting a transport timeout. Matches the per-frame timeout Gluegun
+/// applied when the channel pulled frames directly.
+const receive_timeout_ms: Int = 5000
+
 pub opaque type Channel {
   Channel(
     transport: Transport,
+    inbound: Subject(Frame),
     topic: String,
     join_ref: String,
     counter: ref.Counter,
@@ -67,7 +74,8 @@ pub fn connect_with(
   codec: Codec,
   heartbeat_ms: Int,
 ) -> Result(Channel, AquamarineError) {
-  use tx <- result.try(connector())
+  let inbound = process.new_subject()
+  use tx <- result.try(connector(inbound))
 
   use counter <- result.try(start_counter(tx))
 
@@ -78,6 +86,7 @@ pub fn connect_with(
 
   use _ <- result.try(await_join_reply_with_cleanup(
     tx,
+    inbound,
     counter,
     join_ref,
     codec,
@@ -98,6 +107,7 @@ pub fn connect_with(
 
   Ok(Channel(
     transport: tx,
+    inbound: inbound,
     topic: topic,
     join_ref: join_ref,
     counter: counter,
@@ -140,7 +150,7 @@ pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
 }
 
 fn do_receive(channel: Channel) -> Result(Incoming, AquamarineError) {
-  use frame <- result.try(channel.transport.receive())
+  use frame <- result.try(next_frame(channel.inbound))
 
   case frame {
     transport.Text(text) ->
@@ -221,11 +231,12 @@ fn send_join(
 
 fn await_join_reply_with_cleanup(
   tx: Transport,
+  inbound: Subject(Frame),
   counter: ref.Counter,
   join_ref: String,
   codec: Codec,
 ) -> Result(Nil, AquamarineError) {
-  case await_join_reply(tx, join_ref, codec) {
+  case await_join_reply(inbound, join_ref, codec) {
     Ok(_) -> Ok(Nil)
     Error(err) -> {
       cleanup_connect(tx, counter)
@@ -251,25 +262,25 @@ fn start_heartbeat(
 }
 
 fn await_join_reply(
-  tx: Transport,
+  inbound: Subject(Frame),
   join_ref: String,
   codec: Codec,
 ) -> Result(Nil, AquamarineError) {
-  use frame <- result.try(tx.receive())
+  use frame <- result.try(next_frame(inbound))
 
   case frame {
     transport.Text(text) ->
       case codec.decode(text) {
-        Ok(incoming) -> match_join_reply(tx, join_ref, incoming, codec)
+        Ok(incoming) -> match_join_reply(inbound, join_ref, incoming, codec)
         Error(err) -> Error(error.DecodeFailed(err))
       }
     transport.Closed -> Error(error.ChannelClosed)
-    transport.Binary(_) -> await_join_reply(tx, join_ref, codec)
+    transport.Binary(_) -> await_join_reply(inbound, join_ref, codec)
   }
 }
 
 fn match_join_reply(
-  tx: Transport,
+  inbound: Subject(Frame),
   join_ref: String,
   incoming: Incoming,
   codec: Codec,
@@ -280,6 +291,16 @@ fn match_join_reply(
         Ok(Nil) -> Ok(Nil)
         Error(reason) -> Error(error.JoinRejected(reason))
       }
-    False -> await_join_reply(tx, join_ref, codec)
+    False -> await_join_reply(inbound, join_ref, codec)
   }
+}
+
+/// Block for the next pushed frame.
+///
+/// The transport can no longer report a read error synchronously — a dead
+/// socket arrives as [`transport.Closed`](aquamarine/transport.html#Frame) —
+/// so the only failure left here is running out of patience.
+fn next_frame(inbound: Subject(Frame)) -> Result(Frame, AquamarineError) {
+  process.receive(inbound, receive_timeout_ms)
+  |> result.replace_error(error.Transport(error.Timeout))
 }

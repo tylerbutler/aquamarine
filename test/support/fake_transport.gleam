@@ -2,21 +2,27 @@
 ////
 //// A `FakeSocket` is a small actor that lets a test:
 ////
-//// - script the sequence of inbound results that `transport.receive` will
-////   return (`enqueue_*`),
+//// - push inbound frames at the channel (`enqueue_*`),
 //// - script send-side failures (`enqueue_send_error`),
 //// - script the result of `transport.close` (`enqueue_close_error`),
 //// - observe every outbound text frame that the channel hands to the
 ////   transport (`outbound`),
 //// - observe whether the transport's `close` was called (`is_closed`).
 ////
-//// `transport(fake)` returns a `Transport` value bound to this fake. Pass it
-//// to `channel.connect_with` via a `Connector` (see `connector_for/1`).
+//// The transport seam is push-shaped: the sink `Subject(Frame)` only arrives
+//// when the connector runs. Frames enqueued before that are buffered and
+//// flushed the moment the sink is known, so a test can still script its
+//// inbound sequence up front — and, unlike the old pull model, can also
+//// deliver a frame at any point afterwards without the channel asking.
+////
+//// `connector_for(fake)` returns a `Connector` to hand to
+//// `channel.connect_with`.
 
 import aquamarine/error.{type AquamarineError}
 import aquamarine/transport.{type Frame, type Transport}
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 
 pub opaque type FakeSocket {
@@ -24,11 +30,11 @@ pub opaque type FakeSocket {
 }
 
 pub opaque type Message {
-  ScriptReceive(Result(Frame, AquamarineError))
+  Deliver(Frame)
+  SetSink(Subject(Frame))
   ScriptSendError(AquamarineError)
   ScriptCloseError(AquamarineError)
   DoSend(text: String, reply_to: Subject(Result(Nil, AquamarineError)))
-  DoReceive(reply_to: Subject(Result(Frame, AquamarineError)))
   DoClose(reply_to: Subject(Result(Nil, AquamarineError)))
   Outbound(reply_to: Subject(List(String)))
   IsClosed(reply_to: Subject(Bool))
@@ -37,7 +43,8 @@ pub opaque type Message {
 
 type State {
   State(
-    inbound: List(Result(Frame, AquamarineError)),
+    sink: Option(Subject(Frame)),
+    pending: List(Frame),
     send_errors: List(AquamarineError),
     close_errors: List(AquamarineError),
     outbound: List(String),
@@ -48,7 +55,8 @@ type State {
 pub fn start() -> FakeSocket {
   let assert Ok(started) =
     actor.new(State(
-      inbound: [],
+      sink: None,
+      pending: [],
       send_errors: [],
       close_errors: [],
       outbound: [],
@@ -64,19 +72,15 @@ pub fn shutdown(fake: FakeSocket) -> Nil {
 }
 
 pub fn enqueue_text(fake: FakeSocket, text: String) -> Nil {
-  process.send(fake.subject, ScriptReceive(Ok(transport.Text(text))))
+  process.send(fake.subject, Deliver(transport.Text(text)))
 }
 
 pub fn enqueue_binary(fake: FakeSocket, data: BitArray) -> Nil {
-  process.send(fake.subject, ScriptReceive(Ok(transport.Binary(data))))
+  process.send(fake.subject, Deliver(transport.Binary(data)))
 }
 
 pub fn enqueue_closed(fake: FakeSocket) -> Nil {
-  process.send(fake.subject, ScriptReceive(Ok(transport.Closed)))
-}
-
-pub fn enqueue_receive_error(fake: FakeSocket, err: AquamarineError) -> Nil {
-  process.send(fake.subject, ScriptReceive(Error(err)))
+  process.send(fake.subject, Deliver(transport.Closed))
 }
 
 pub fn enqueue_send_error(fake: FakeSocket, err: AquamarineError) -> Nil {
@@ -98,25 +102,40 @@ pub fn is_closed(fake: FakeSocket) -> Bool {
 pub fn transport(fake: FakeSocket) -> Transport {
   transport.Transport(
     send_text: fn(text) { process.call(fake.subject, 1000, DoSend(text, _)) },
-    receive: fn() { process.call(fake.subject, 5000, DoReceive) },
     close: fn() { process.call(fake.subject, 1000, DoClose) },
   )
 }
 
 pub fn connector_for(fake: FakeSocket) -> transport.Connector {
-  fn() { Ok(transport(fake)) }
+  fn(sink) {
+    process.send(fake.subject, SetSink(sink))
+    Ok(transport(fake))
+  }
 }
 
 pub fn failing_connector(err: AquamarineError) -> transport.Connector {
-  fn() { Error(err) }
+  fn(_sink) { Error(err) }
 }
 
 fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
   case msg {
-    ScriptReceive(item) ->
-      actor.continue(
-        State(..state, inbound: list.append(state.inbound, [item])),
-      )
+    Deliver(frame) ->
+      case state.sink {
+        Some(sink) -> {
+          process.send(sink, frame)
+          actor.continue(state)
+        }
+        // Buffered until the connector hands us a sink.
+        None ->
+          actor.continue(
+            State(..state, pending: list.append(state.pending, [frame])),
+          )
+      }
+
+    SetSink(sink) -> {
+      list.each(state.pending, process.send(sink, _))
+      actor.continue(State(..state, sink: Some(sink), pending: []))
+    }
 
     ScriptSendError(err) ->
       actor.continue(
@@ -139,18 +158,6 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
           actor.continue(
             State(..state, outbound: list.append(state.outbound, [text])),
           )
-        }
-      }
-
-    DoReceive(reply_to) ->
-      case state.inbound {
-        [item, ..rest] -> {
-          process.send(reply_to, item)
-          actor.continue(State(..state, inbound: rest))
-        }
-        [] -> {
-          process.send(reply_to, Error(error.Transport(error.Timeout)))
-          actor.continue(state)
         }
       }
 
