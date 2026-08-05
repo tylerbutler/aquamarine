@@ -94,7 +94,14 @@ export default defineConfig({
 				{
 					label: "Guides",
 					items: [
+						{
+							label: "Choosing your model",
+							link: "/guides/choosing-your-model/",
+						},
 						{ label: "Channel lifecycle", link: "/guides/channels/" },
+						{ label: "One socket, many topics", link: "/guides/multi-topic/" },
+						{ label: "Reconnect", link: "/guides/reconnect/" },
+						{ label: "Supervision", link: "/guides/supervision/" },
 						{ label: "Codecs", link: "/guides/codecs/" },
 						{ label: "Phoenix and Beryl", link: "/guides/phoenix/" },
 						{
