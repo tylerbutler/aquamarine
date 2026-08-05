@@ -22,12 +22,17 @@
 	/* Aquamarine-specific: crimson highlight, used sparingly. */
 	--aqua-color-crimson: #e63462;
 	--aqua-color-crimson-soft: #ff6b8b;
+	/* Crimson is the wayfinding accent for the typed-error surface. */
+	--aqua-error-line: var(--aqua-color-crimson);
+	--aqua-error-link: var(--aqua-color-crimson-soft);
+	--aqua-space-tight: clamp(0.75rem, 0.68rem + 0.35vw, 1rem);
+	--aqua-space-section: clamp(2.75rem, 2.05rem + 3.48vw, 5.25rem);
 }
 
 /* Light mode. */
 :root[data-theme="light"] {
 	--sl-color-accent-low: #d6f3ef;
-	--sl-color-accent: #1e8e84;
+	--sl-color-accent: #14786f;
 	--sl-color-accent-high: #0e3f47;
 
 	--sl-color-white: #0b1a26;
@@ -42,4 +47,266 @@
 
 	--aqua-color-crimson: #c01e4a;
 	--aqua-color-crimson-soft: #e63462;
+	--aqua-error-line: var(--aqua-color-crimson);
+	--aqua-error-link: var(--aqua-color-crimson);
+}
+
+body {
+	font-variation-settings: "wght" 430;
+}
+
+h1,
+h2,
+h3,
+.site-title span {
+	font-family: var(--aqua-font-display);
+	font-variation-settings: "wght" 600;
+	letter-spacing: -0.018em;
+	text-wrap: balance;
+}
+
+/* Sora reads tight at heading weights; ease tracking back toward neutral at small sizes. */
+h4,
+h5,
+h6 {
+	font-family: var(--aqua-font-display);
+	font-variation-settings: "wght" 600;
+	letter-spacing: -0.008em;
+}
+
+.sl-markdown-content p,
+.sl-markdown-content li {
+	text-wrap: pretty;
+}
+
+.aqua-home {
+	display: grid;
+	gap: var(--aqua-space-section);
+	margin-block-start: 1.5rem;
+}
+
+.aqua-intro {
+	display: grid;
+	gap: var(--aqua-space-tight);
+	max-width: 68ch;
+}
+
+.aqua-copy {
+	margin: 0;
+	font-size: clamp(1.05rem, 0.99rem + 0.3vw, 1.25rem);
+	line-height: 1.75;
+}
+
+.aqua-intro strong {
+	color: var(--sl-color-accent-high);
+	font-variation-settings: "wght" 720;
+}
+
+.aqua-section {
+	display: grid;
+	gap: clamp(1rem, 0.83rem + 0.85vw, 1.6rem);
+}
+
+.aqua-section > h2,
+.aqua-section > p {
+	margin-block: 0;
+}
+
+.aqua-section > .aqua-copy {
+	max-width: 68ch;
+	color: var(--sl-color-gray-2);
+	font-size: 1.02rem;
+	line-height: 1.75;
+}
+
+.aqua-lifecycle {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+	gap: 0.75rem;
+	list-style: none;
+	margin: 0;
+	padding: clamp(0.75rem, 0.54rem + 1.06vw, 1.5rem);
+	border: 1px solid var(--sl-color-gray-5);
+	background: var(--sl-color-gray-6);
+}
+
+.aqua-lifecycle__step {
+	display: grid;
+	align-content: start;
+	gap: 0.45rem;
+	min-height: 9rem;
+	padding: 1rem;
+	border: 1px solid var(--sl-color-gray-5);
+	background: var(--sl-color-black);
+}
+
+.aqua-lifecycle__step strong {
+	color: var(--sl-color-white);
+	font-size: 1.08rem;
+	font-variation-settings: "wght" 760;
+}
+
+.aqua-lifecycle__step span {
+	color: var(--sl-color-gray-2);
+	line-height: 1.55;
+}
+
+.aqua-lifecycle__step code {
+	width: fit-content;
+}
+
+.aqua-paths {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+	gap: 1rem;
+}
+
+.aqua-path {
+	display: grid;
+	gap: 0.55rem;
+	padding: 1rem 0 1.1rem;
+	border-block-start: 2px solid var(--sl-color-gray-5);
+}
+
+.aqua-path:first-child {
+	border-block-start-color: var(--sl-color-accent);
+}
+
+.aqua-path[data-variant="error"] {
+	border-block-start-color: var(--aqua-error-line);
+}
+
+.aqua-path[data-variant="error"] a {
+	color: var(--aqua-error-link);
+}
+
+.aqua-path strong {
+	color: var(--sl-color-white);
+	font-size: 1.05rem;
+	font-variation-settings: "wght" 720;
+}
+
+.aqua-path span {
+	color: var(--sl-color-gray-2);
+	line-height: 1.55;
+}
+
+.aqua-path a {
+	width: fit-content;
+	font-variation-settings: "wght" 650;
+}
+
+.aqua-path-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem 1.5rem;
+	margin: 0;
+	font-size: 0.875rem;
+	color: var(--sl-color-gray-2);
+}
+
+.aqua-legend-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.aqua-legend-swatch {
+	flex: none;
+	width: 1.5rem;
+	height: 2px;
+	background: var(--sl-color-gray-5);
+}
+
+.aqua-legend-item[data-variant="recommended"] .aqua-legend-swatch {
+	background: var(--sl-color-accent);
+}
+
+.aqua-legend-item[data-variant="error"] .aqua-legend-swatch {
+	background: var(--aqua-error-line);
+}
+
+.aqua-arrow {
+	display: inline-block;
+	transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.aqua-path a:hover .aqua-arrow,
+.aqua-path a:focus-visible .aqua-arrow {
+	transform: translateX(0.2em);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.aqua-arrow {
+		transition: none;
+	}
+}
+
+.aqua-ecosystem-map {
+	display: grid;
+	gap: 1.25rem;
+	padding: clamp(1rem, 0.72rem + 1.4vw, 2rem);
+	margin-block: 0;
+	border: 1px solid var(--sl-color-gray-5);
+	background: var(--sl-color-gray-6);
+}
+
+.aqua-diagram {
+	display: block;
+	width: 100%;
+	max-width: 38rem;
+	height: auto;
+	margin-inline: auto;
+}
+
+.aqua-dia-node {
+	fill: var(--sl-color-black);
+	stroke: var(--sl-color-gray-5);
+	stroke-width: 1.5;
+}
+
+.aqua-dia-node--primary {
+	fill: var(--sl-color-accent-low);
+	stroke: var(--sl-color-accent);
+	stroke-width: 2;
+}
+
+.aqua-dia-name {
+	fill: var(--sl-color-white);
+	font-size: 17px;
+	font-weight: 700;
+}
+
+.aqua-dia-name--sm {
+	font-size: 15px;
+}
+
+.aqua-dia-sub {
+	fill: var(--sl-color-gray-2);
+	font-size: 12.5px;
+}
+
+.aqua-dia-line {
+	fill: none;
+	stroke: var(--sl-color-gray-3);
+	stroke-width: 1.5;
+}
+
+.aqua-dia-arrowhead {
+	fill: var(--sl-color-gray-3);
+}
+
+.aqua-dia-label {
+	fill: var(--sl-color-gray-2);
+	font-size: 12.5px;
+}
+
+.aqua-ecosystem-caption {
+	max-width: 60ch;
+	margin-inline: auto;
+	color: var(--sl-color-gray-2);
+	font-size: 0.9rem;
+	line-height: 1.55;
+	text-align: center;
+	text-wrap: pretty;
 }

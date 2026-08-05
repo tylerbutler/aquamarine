@@ -1,3 +1,8 @@
 :root {
---sl-font: "Commissioner Variable", var(--sl-font-system);
+	/* Body & UI: humanist sans, highly readable in long reference passages. */
+	--sl-font: "Commissioner Variable", var(--sl-font-system);
+	/* Code: technical monospace with real character (Gleam samples live here). */
+	--sl-font-mono: "JetBrains Mono Variable", var(--sl-font-system-mono);
+	/* Display: crisp geometric sans for headings and the site title. */
+	--aqua-font-display: "Sora Variable", var(--sl-font-system);
 }
