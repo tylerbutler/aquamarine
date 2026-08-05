@@ -74,8 +74,7 @@ pub fn round_trips_a_client_push_through_the_public_facade_test() {
       codec: phoenix.codec(),
     )
 
-  let assert Ok(Nil) =
-    aquamarine.push(ch, "say", json.object([#("body", json.string("hello"))]))
+  aquamarine.push(ch, "say", json.object([#("body", json.string("hello"))]))
 
   let assert Ok(incoming) = aquamarine.receive(ch)
   assert incoming.event == phoenix.codec().reply_event
