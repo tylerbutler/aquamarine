@@ -25,6 +25,21 @@
 //// else. Here, a frame that nobody is blocked on goes to its topic's subject
 //// and sits in that mailbox until the caller gets to it.
 ////
+//// ## Supervision
+////
+//// [`supervised`](#supervised) returns a child specification for an OTP
+//// supervision tree, so a socket can live in your application's supervisor
+//// rather than be babysat by whatever process happened to open it. Supervised
+//// sockets are named, because a restarted socket is a different process and a
+//// name is the only handle that survives that.
+////
+//// **A restart does not rejoin.** The restarted socket comes back with an
+//// empty routing table and no joined topics, and every `Channel` handle from
+//// before the restart is stale: its events subject belonged to the dead actor
+//// and will never receive again. Re-join after a restart. Automatic rejoin is
+//// a property of in-actor reconnect, not of supervisor restart, and this
+//// module does not provide it.
+////
 //// ## Process ownership
 ////
 //// The actor owns everything with state: the transport, the inbound sink, the
@@ -43,6 +58,8 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/otp/supervision
+import gleam/result
 import logging
 
 /// Default heartbeat interval, matching the Phoenix JS client.
@@ -191,11 +208,64 @@ pub fn start(
   codec: Codec,
   heartbeat_ms: Int,
 ) -> Result(Socket, AquamarineError) {
+  start_named(connector, codec, heartbeat_ms, None)
+}
+
+/// Start a socket, optionally registering it under a name.
+@internal
+pub fn start_named(
+  connector: Connector,
+  codec: Codec,
+  heartbeat_ms: Int,
+  name: Option(Name),
+) -> Result(Socket, AquamarineError) {
   // The connector runs inside the actor's initialiser, where the only failure
   // channel is a `String`. Route the typed error out of band.
   let failure = process.new_subject()
 
-  let started =
+  case
+    actor.start(build_with_failure(
+      connector,
+      codec,
+      heartbeat_ms,
+      name,
+      failure,
+    ))
+  {
+    Ok(started) -> Ok(Socket(subject: started.data))
+    Error(_) ->
+      case process.receive(failure, 0) {
+        Ok(err) -> Error(err)
+        Error(Nil) -> Error(error.InternalError("failed to start socket actor"))
+      }
+  }
+}
+
+/// Build the actor for supervision, where a connect failure has nowhere typed
+/// to go and simply fails the child start.
+fn build(
+  connector: Connector,
+  codec: Codec,
+  heartbeat_ms: Int,
+  name: Option(Name),
+) -> actor.Builder(State, Message, Subject(Message)) {
+  build_with_failure(
+    connector,
+    codec,
+    heartbeat_ms,
+    name,
+    process.new_subject(),
+  )
+}
+
+fn build_with_failure(
+  connector: Connector,
+  codec: Codec,
+  heartbeat_ms: Int,
+  name: Option(Name),
+  failure: Subject(AquamarineError),
+) -> actor.Builder(State, Message, Subject(Message)) {
+  let builder =
     actor.new_with_initialiser(init_timeout_ms, fn(self) {
       let sink = process.new_subject()
       case connector(sink) {
@@ -231,16 +301,89 @@ pub fn start(
       }
     })
     |> actor.on_message(handle)
-    |> actor.start
 
-  case started {
-    Ok(started) -> Ok(Socket(subject: started.data))
-    Error(_) ->
-      case process.receive(failure, 0) {
-        Ok(err) -> Error(err)
-        Error(Nil) -> Error(error.InternalError("failed to start socket actor"))
-      }
+  case name {
+    Some(Name(name)) -> actor.named(builder, name)
+    None -> builder
   }
+}
+
+/// A registered name for a socket.
+///
+/// Names let a process reach a socket without the handle being threaded
+/// through its own state, and they are what makes a supervised socket
+/// reachable at all — a restarted socket is a different process, and the name
+/// is the only thing that survives.
+pub opaque type Name {
+  Name(name: process.Name(Message))
+}
+
+/// Generate a fresh name. The prefix is for readability in crash reports; a
+/// unique suffix is appended, so two calls never collide.
+pub fn new_name(prefix prefix: String) -> Name {
+  Name(process.new_name(prefix))
+}
+
+/// A handle to whichever socket currently holds `name`.
+///
+/// Safe to build before the socket exists and safe to keep across a restart —
+/// it resolves at send time. Sends to a name nobody holds are silently
+/// dropped, as OTP sends always are.
+pub fn named(name: Name) -> Socket {
+  Socket(subject: process.named_subject(name.name))
+}
+
+/// The process currently holding this socket, if any.
+@internal
+pub fn owner(socket: Socket) -> Result(process.Pid, Nil) {
+  process.subject_owner(socket.subject)
+}
+
+/// A child specification for an OTP supervision tree.
+///
+/// The socket is `Transient`: it is restarted if it dies abnormally, but a
+/// deliberate [`close`](#close) exits normally and is not second-guessed by
+/// the supervisor.
+///
+/// Losing the *connection* does not exit the actor — it stays up so that
+/// callers get `ChannelClosed` instead of silence — so a dropped connection is
+/// not something a supervisor restart recovers from. Reconnect is the actor's
+/// own business.
+///
+/// The restarted socket has **no joined channels**, and `Channel` handles from
+/// before the restart are stale. See the module documentation.
+pub fn supervised(
+  host host: String,
+  port port: Int,
+  path path: String,
+  codec codec: Codec,
+  name name: Name,
+) -> supervision.ChildSpecification(Socket) {
+  supervised_with(
+    transport.gluegun_connector(host:, port:, path:),
+    codec,
+    default_heartbeat_ms,
+    name,
+  )
+}
+
+/// Like [`supervised`](#supervised) but takes a `Connector` and an explicit
+/// heartbeat interval.
+@internal
+pub fn supervised_with(
+  connector: Connector,
+  codec: Codec,
+  heartbeat_ms: Int,
+  name: Name,
+) -> supervision.ChildSpecification(Socket) {
+  supervision.worker(fn() {
+    build(connector, codec, heartbeat_ms, Some(name))
+    |> actor.start
+    |> result.map(fn(started: actor.Started(Subject(Message))) {
+      actor.Started(pid: started.pid, data: Socket(subject: started.data))
+    })
+  })
+  |> supervision.restart(supervision.Transient)
 }
 
 /// Join a topic and block until the server replies.
