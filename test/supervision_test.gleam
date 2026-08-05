@@ -5,6 +5,7 @@
 //// because the handle is a name rather than a pid.
 
 import aquamarine/channel
+import aquamarine/codec
 import aquamarine/phoenix
 import aquamarine/socket
 import gleam/erlang/process
@@ -27,7 +28,7 @@ pub fn a_supervised_socket_is_usable_test() {
   let ch = join_ok(f, sock, test_topic, "1")
 
   fake.enqueue_text(f, server_push(test_topic, "hello"))
-  let assert Ok(incoming) = channel.receive(ch)
+  let assert Ok(incoming) = channel.receive(ch, 500)
   assert incoming.event == "hello"
 
   let assert Ok(Nil) = socket.close(sock)
@@ -49,7 +50,6 @@ pub fn a_process_that_never_saw_the_handle_can_push_via_the_name_test() {
   process.spawn(fn() {
     socket.push(
       socket.named(name),
-      "1",
       test_topic,
       "from_a_stranger",
       json.object([]),
@@ -92,7 +92,7 @@ pub fn killing_the_socket_restarts_it_and_it_is_usable_again_test() {
   // rather than returning AlreadyJoined — and its ref counter started over.
   let fresh = join_ok(f, sock, test_topic, "1")
   fake.enqueue_text(f, server_push(test_topic, "after_restart"))
-  let assert Ok(incoming) = channel.receive(fresh)
+  let assert Ok(incoming) = channel.receive(fresh, 500)
   assert incoming.event == "after_restart"
 
   let assert Ok(Nil) = socket.close(sock)
@@ -107,10 +107,8 @@ fn start_supervised(
 ) -> static_supervisor.Supervisor {
   let assert Ok(started) =
     static_supervisor.new(static_supervisor.OneForOne)
-    |> static_supervisor.add(socket.supervised_with(
-      fake.connector_for(f),
-      phoenix.codec(),
-      no_heartbeat,
+    |> static_supervisor.add(socket.supervised(
+      test_config(f, phoenix.codec(), no_heartbeat),
       name,
     ))
     |> static_supervisor.start
@@ -177,4 +175,14 @@ fn last(frames: List(String)) -> Result(String, Nil) {
     [_, ..rest] -> last(rest)
     [] -> Error(Nil)
   }
+}
+
+/// A socket configuration around a fake transport, with a chosen heartbeat.
+fn test_config(
+  f: fake.FakeSocket,
+  codec: codec.Codec,
+  heartbeat_ms: Int,
+) -> socket.Config {
+  socket.test_config(fake.connector_for(f), codec)
+  |> socket.with_heartbeat_ms(heartbeat_ms)
 }

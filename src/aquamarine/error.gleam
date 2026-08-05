@@ -48,6 +48,17 @@ pub type AquamarineError {
   /// The topic is reserved by the protocol — the heartbeat topic — and cannot
   /// be joined by a channel.
   ReservedTopic(topic: String)
+  /// The socket is between connections: it lost the connection and is retrying.
+  /// Nothing was sent. Frames are deliberately not buffered while
+  /// disconnected, because buffering would create delivery expectations this
+  /// library cannot honour.
+  Disconnected
+  /// After a reconnect the server refused to rejoin this topic — an expired
+  /// token, a topic that no longer exists. That channel is finished; the
+  /// socket and its other channels are not.
+  RejoinRejected(topic: String, reason: String)
+  /// Reconnect hit its configured attempt limit and stopped trying.
+  ReconnectFailed(attempts: Int)
   /// An inbound wire frame could not be decoded.
   DecodeFailed(codec.DecodeError)
   /// Waited for a reply matching an outbound ref but it never arrived within

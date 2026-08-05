@@ -10,6 +10,7 @@ import aquamarine/channel
 import aquamarine/codec
 import aquamarine/error
 import aquamarine/phoenix
+import aquamarine/socket
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
@@ -70,11 +71,9 @@ fn connect_with_fake(fake_socket: fake.FakeSocket) -> channel.Channel {
   fake.enqueue_text(fake_socket, ok_join_reply("1"))
   let assert Ok(ch) =
     channel.connect_with(
-      fake.connector_for(fake_socket),
+      test_config(fake_socket, phoenix.codec(), no_heartbeat),
       test_topic,
       empty_payload(),
-      phoenix.codec(),
-      no_heartbeat,
     )
   ch
 }
@@ -100,11 +99,9 @@ pub fn connect_with_maps_a_non_ok_status_to_join_rejected_test() {
   fake.enqueue_text(f, error_join_reply("1"))
 
   assert channel.connect_with(
-      fake.connector_for(f),
+      test_config(f, phoenix.codec(), no_heartbeat),
       test_topic,
       empty_payload(),
-      phoenix.codec(),
-      no_heartbeat,
     )
     == Error(error.JoinRejected("error"))
 
@@ -118,11 +115,9 @@ pub fn connect_with_maps_a_malformed_reply_payload_to_join_rejected_test() {
   fake.enqueue_text(f, malformed_reply("1"))
 
   assert channel.connect_with(
-      fake.connector_for(f),
+      test_config(f, phoenix.codec(), no_heartbeat),
       test_topic,
       empty_payload(),
-      phoenix.codec(),
-      no_heartbeat,
     )
     == Error(error.JoinRejected("error"))
 
@@ -136,11 +131,9 @@ pub fn connect_with_maps_undecodable_reply_text_to_decode_failed_test() {
 
   let assert Error(error.DecodeFailed(_)) =
     channel.connect_with(
-      fake.connector_for(f),
+      test_config(f, phoenix.codec(), no_heartbeat),
       test_topic,
       empty_payload(),
-      phoenix.codec(),
-      no_heartbeat,
     )
 
   assert fake.is_closed(f)
@@ -152,11 +145,9 @@ pub fn connect_with_maps_a_closed_frame_during_handshake_to_channel_closed_test(
   fake.enqueue_closed(f)
 
   assert channel.connect_with(
-      fake.connector_for(f),
+      test_config(f, phoenix.codec(), no_heartbeat),
       test_topic,
       empty_payload(),
-      phoenix.codec(),
-      no_heartbeat,
     )
     == Error(error.ChannelClosed)
 
@@ -172,11 +163,9 @@ pub fn connect_with_surfaces_a_failed_join_send_as_a_closed_channel_test() {
   fake.fail_next_send(f)
 
   assert channel.connect_with(
-      fake.connector_for(f),
+      test_config(f, phoenix.codec(), no_heartbeat),
       test_topic,
       empty_payload(),
-      phoenix.codec(),
-      no_heartbeat,
     )
     == Error(error.ChannelClosed)
 
@@ -208,14 +197,12 @@ pub fn a_push_arriving_before_the_join_reply_is_delivered_not_dropped_test() {
 
   let assert Ok(ch) =
     channel.connect_with(
-      fake.connector_for(f),
+      test_config(f, phoenix.codec(), no_heartbeat),
       test_topic,
       empty_payload(),
-      phoenix.codec(),
-      no_heartbeat,
     )
 
-  let assert Ok(incoming) = channel.receive(ch)
+  let assert Ok(incoming) = channel.receive(ch, 500)
   assert incoming.event == "early"
   assert decode_n(incoming.payload) == Ok(1)
 
@@ -243,11 +230,9 @@ pub fn connect_with_skips_non_matching_frames_before_the_join_reply_test() {
 
   let assert Ok(ch) =
     channel.connect_with(
-      fake.connector_for(f),
+      test_config(f, phoenix.codec(), no_heartbeat),
       test_topic,
       empty_payload(),
-      phoenix.codec(),
-      no_heartbeat,
     )
   let assert Ok(Nil) = channel.close(ch)
   fake.shutdown(f)
@@ -258,11 +243,9 @@ pub fn connect_with_propagates_a_connector_failure_verbatim_test() {
     fake.failing_connector(error.Transport(error.ConnectFailed("nope")))
 
   assert channel.connect_with(
-      connector,
+      socket.test_config(connector, phoenix.codec()),
       test_topic,
       empty_payload(),
-      phoenix.codec(),
-      no_heartbeat,
     )
     == Error(error.Transport(error.ConnectFailed("nope")))
 }
@@ -292,20 +275,23 @@ pub fn push_encodes_the_topic_event_payload_and_a_fresh_ref_test() {
   fake.shutdown(f)
 }
 
-pub fn push_surfaces_a_transport_send_failure_on_the_next_receive_test() {
+/// `push` cannot report a failure itself — it is fire-and-forget. A send that
+/// fails takes the connection down, and the socket starts reconnecting, which
+/// is visible on the status stream rather than on the channel.
+pub fn push_surfaces_a_transport_send_failure_as_a_disconnect_test() {
   let f = fake.start()
   let ch = connect_with_fake(f)
+  let status = process.new_subject()
+  socket.watch(channel.socket(ch), status)
 
   fake.fail_next_send(f)
-
-  // `push` cannot report the failure itself — it is fire-and-forget. A send
-  // that fails takes the connection down, and that is what the caller
-  // observes.
   channel.push(ch, "say", empty_payload())
 
-  assert channel.receive(ch) == Error(error.ChannelClosed)
+  let assert Ok(socket.Disconnected(_)) = process.receive(status, 500)
 
-  let assert Ok(Nil) = channel.close(ch)
+  // Stop the socket before the fake, or its next reconnect attempt calls into
+  // a dead process.
+  let _ = channel.close(ch)
   fake.shutdown(f)
 }
 
@@ -419,7 +405,7 @@ pub fn heartbeat_replies_never_surface_to_receive_test() {
     ),
   )
 
-  let assert Ok(incoming) = channel.receive(ch)
+  let assert Ok(incoming) = channel.receive(ch, 500)
   assert incoming.event == "real"
 
   let assert Ok(Nil) = channel.close(ch)
@@ -434,11 +420,9 @@ fn connect_with_beating_fake(
   fake.enqueue_text(fake_socket, ok_join_reply("1"))
   let assert Ok(ch) =
     channel.connect_with(
-      fake.connector_for(fake_socket),
+      test_config(fake_socket, phoenix.codec(), interval_ms),
       test_topic,
       empty_payload(),
-      phoenix.codec(),
-      interval_ms,
     )
   ch
 }
@@ -540,7 +524,7 @@ pub fn frames_arriving_between_a_push_and_its_reply_reach_the_subscriber_test() 
     channel.push_and_await_reply(ch, "ping", empty_payload(), 1000)
 
   // The interleaved frame was not dropped to make room for the reply.
-  let assert Ok(incoming) = channel.receive(ch)
+  let assert Ok(incoming) = channel.receive(ch, 500)
   assert incoming.event == "interleaved"
 
   let assert Ok(Nil) = channel.close(ch)
@@ -561,7 +545,7 @@ pub fn a_reply_timeout_drops_the_pending_entry_test() {
   process.sleep(20)
   reply_to_ref(f, "2", empty_payload())
 
-  let assert Ok(incoming) = channel.receive(ch)
+  let assert Ok(incoming) = channel.receive(ch, 500)
   assert incoming.ref == Some("2")
 
   let assert Ok(Nil) = channel.close(ch)
@@ -600,20 +584,16 @@ pub fn losing_the_socket_fails_every_pending_waiter_test() {
 /// hang a caller. It degrades to "no reply available" at the timeout.
 pub fn a_codec_that_cannot_correlate_degrades_to_reply_timeout_test() {
   let f = fake.start()
-  let codec = uncorrelating_codec()
+  let assert Ok(sock) =
+    socket.start(test_config(f, uncorrelating_codec(), no_heartbeat))
 
-  fake.enqueue_text(f, ok_join_reply("1"))
-  // The join itself cannot correlate either, so connect times out rather than
-  // blocking forever.
-  assert channel.connect_with(
-      fake.connector_for(f),
-      test_topic,
-      empty_payload(),
-      codec,
-      no_heartbeat,
-    )
+  fake.enqueue_text_after(f, 10, ok_join_reply("1"))
+  // The reply arrives, but the codec cannot recognise it as the answer to
+  // anything. The caller's timeout takes over instead of blocking forever.
+  assert channel.join(sock, test_topic, empty_payload(), 200)
     == Error(error.ReplyTimeout)
 
+  let assert Ok(Nil) = socket.close(sock)
   fake.shutdown(f)
 }
 
@@ -633,11 +613,9 @@ pub fn connect_exposes_the_accepted_join_reply_test() {
   )
   let assert Ok(ch) =
     channel.connect_with(
-      fake.connector_for(f),
+      test_config(f, phoenix.codec(), no_heartbeat),
       test_topic,
       empty_payload(),
-      phoenix.codec(),
-      no_heartbeat,
     )
 
   let reply = channel.join_reply(ch)
@@ -720,7 +698,7 @@ pub fn receive_returns_the_next_application_frame_test() {
     )
   fake.enqueue_text(f, server_push)
 
-  let assert Ok(incoming) = channel.receive(ch)
+  let assert Ok(incoming) = channel.receive(ch, 500)
   assert incoming.event == "tick"
   assert incoming.topic == test_topic
   assert decode_n(incoming.payload) == Ok(7)
@@ -745,7 +723,7 @@ pub fn receive_skips_a_binary_frame_and_returns_the_next_text_frame_test() {
     ),
   )
 
-  let assert Ok(incoming) = channel.receive(ch)
+  let assert Ok(incoming) = channel.receive(ch, 500)
   assert incoming.event == "after_binary"
 
   let assert Ok(Nil) = channel.close(ch)
@@ -778,7 +756,7 @@ pub fn receive_skips_a_heartbeat_reply_and_returns_the_next_channel_frame_test()
     ),
   )
 
-  let assert Ok(incoming) = channel.receive(ch)
+  let assert Ok(incoming) = channel.receive(ch, 500)
   assert incoming.event == "after_hb"
 
   let assert Ok(Nil) = channel.close(ch)
@@ -800,7 +778,7 @@ pub fn receive_returns_channel_closed_on_a_phx_close_event_test() {
     ),
   )
 
-  assert channel.receive(ch) == Error(error.ChannelClosed)
+  assert channel.receive(ch, 500) == Error(error.ChannelClosed)
 
   let assert Ok(Nil) = channel.close(ch)
   fake.shutdown(f)
@@ -821,21 +799,29 @@ pub fn receive_returns_channel_closed_on_a_phx_error_event_test() {
     ),
   )
 
-  assert channel.receive(ch) == Error(error.ChannelClosed)
+  assert channel.receive(ch, 500) == Error(error.ChannelClosed)
 
   let assert Ok(Nil) = channel.close(ch)
   fake.shutdown(f)
 }
 
-pub fn receive_returns_channel_closed_on_a_closed_frame_test() {
+/// A dropped connection is no longer the end of the channel — the socket
+/// reconnects and rejoins. The channel is told nothing, because from its point
+/// of view nothing happened to *its* topic; the status stream is where a
+/// disconnect shows up.
+pub fn a_closed_frame_starts_a_reconnect_rather_than_ending_the_channel_test() {
   let f = fake.start()
   let ch = connect_with_fake(f)
+  let status = process.new_subject()
+  socket.watch(channel.socket(ch), status)
 
   fake.enqueue_closed(f)
 
-  assert channel.receive(ch) == Error(error.ChannelClosed)
+  let assert Ok(socket.Disconnected(error.ChannelClosed)) =
+    process.receive(status, 500)
+  let assert Ok(socket.Reconnecting(1, _)) = process.receive(status, 500)
 
-  let assert Ok(Nil) = channel.close(ch)
+  let _ = channel.close(ch)
   fake.shutdown(f)
 }
 
@@ -845,7 +831,7 @@ pub fn receive_returns_decode_failed_on_a_malformed_text_frame_test() {
 
   fake.enqueue_text(f, "not json")
 
-  let assert Error(error.DecodeFailed(_)) = channel.receive(ch)
+  let assert Error(error.DecodeFailed(_)) = channel.receive(ch, 500)
 
   let assert Ok(Nil) = channel.close(ch)
   fake.shutdown(f)
@@ -888,4 +874,14 @@ fn decode_n(payload) -> Result(Int, Nil) {
   }
   decode.run(payload, decoder)
   |> result.map_error(fn(_) { Nil })
+}
+
+/// A socket configuration around a fake transport, with a chosen heartbeat.
+fn test_config(
+  f: fake.FakeSocket,
+  codec: codec.Codec,
+  heartbeat_ms: Int,
+) -> socket.Config {
+  socket.test_config(fake.connector_for(f), codec)
+  |> socket.with_heartbeat_ms(heartbeat_ms)
 }
