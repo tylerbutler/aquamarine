@@ -9,14 +9,13 @@ Aquamarine is a Gleam library for an Erlang-targeted, protocol-agnostic Beryl-st
 - Strict build: `gleam build --warnings-as-errors` or `just build-strict`
 - Test all: `gleam test` or `just test`
 - Test one file: `gleam test -- test/codec_test.gleam`
-- Test by name: `gleam test -- --test-name-filter='phoenix codec adapter'`
 - Format: `gleam format src test` or `just format`
 - Check formatting: `gleam format --check src test` or `just format-check`
 - Type check: `gleam check` or `just check`
 - Full PR/CI check: `just ci` (`format-check`, `check`, `test`, `build-strict`)
 - Build docs: `gleam docs build` or `just docs`
 
-CI currently runs on OTP 28 and Gleam 1.16.0, then executes `gleam deps download`, `gleam test`, and `gleam format --check src test`.
+CI currently runs on OTP 28 and Gleam 1.18.1, then executes `gleam deps download`, `gleam test`, and `gleam format --check src test`.
 
 ## Architecture
 
@@ -35,6 +34,6 @@ CI currently runs on OTP 28 and Gleam 1.16.0, then executes `gleam deps download
 - `connect` must clean up partially started resources on every failure path. Existing helpers (`cleanup_connect`, `start_counter`, `send_join`, `await_join_reply_with_cleanup`, `start_heartbeat`) encode that pattern.
 - Only the process that called `connect` should call `receive`; `push` and `close` are designed to be safe from other processes because they send through the socket actor.
 - `receive` skips non-application frames, binary frames, and heartbeat replies; it turns protocol close/error events into `Error(ChannelClosed)`.
-- Tests use Startest. The suite entrypoint is `test/aquamarine_test.gleam`, and discovered test modules expose public functions such as `codec_tests`, `heartbeat_tests`, and `integration_tests`.
-- Codec tests compare against `phoenix_channel_fixtures`; integration tests start a local Beryl server via Mist on port `47891`.
-- Prefer `startest/expect` assertions and `describe`/`it` grouping, matching the existing tests.
+- Tests use gleeunit. The suite entrypoint is `test/aquamarine_test.gleam`, and every test is a public zero-argument function whose name ends in `_test` inside a `*_test` module.
+- Codec tests compare against `phoenix_channel_fixtures`; integration tests stand up a supervised Beryl instance (`beryl/supervisor`) behind a Mist listener on an ephemeral port (`mist.port(0)` plus `mist.after_start`).
+- Prefer the `assert` keyword for assertions (`assert actual == expected`), matching the existing tests; avoid the deprecated `gleeunit/should` module.
