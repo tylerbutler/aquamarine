@@ -1,42 +1,37 @@
 import aquamarine/ref
 import gleam/erlang/process
-import startest.{describe, it}
-import startest/expect
 
-pub fn ref_tests() {
-  describe("ref", [
-    it("produces monotonically increasing refs as strings", fn() {
-      let assert Ok(counter) = ref.start()
-      ref.next(counter) |> expect.to_equal(Ok("1"))
-      ref.next(counter) |> expect.to_equal(Ok("2"))
-      ref.next(counter) |> expect.to_equal(Ok("3"))
-    }),
-    it("issues independent sequences for separate counters", fn() {
-      let assert Ok(a) = ref.start()
-      let assert Ok(b) = ref.start()
-      ref.next(a) |> expect.to_equal(Ok("1"))
-      ref.next(a) |> expect.to_equal(Ok("2"))
-      ref.next(b) |> expect.to_equal(Ok("1"))
-      ref.next(a) |> expect.to_equal(Ok("3"))
-      ref.next(b) |> expect.to_equal(Ok("2"))
-    }),
-    it("can stop a counter without hanging", fn() {
-      let assert Ok(counter) = ref.start()
-      ref.next(counter) |> expect.to_equal(Ok("1"))
+pub fn produces_monotonically_increasing_refs_as_strings_test() {
+  let assert Ok(counter) = ref.start()
+  assert ref.next(counter) == Ok("1")
+  assert ref.next(counter) == Ok("2")
+  assert ref.next(counter) == Ok("3")
+}
 
-      ref.stop(counter)
-      process.sleep(10)
+pub fn issues_independent_sequences_for_separate_counters_test() {
+  let assert Ok(a) = ref.start()
+  let assert Ok(b) = ref.start()
+  assert ref.next(a) == Ok("1")
+  assert ref.next(a) == Ok("2")
+  assert ref.next(b) == Ok("1")
+  assert ref.next(a) == Ok("3")
+  assert ref.next(b) == Ok("2")
+}
 
-      Nil
-    }),
-    it("returns an error after the counter stops", fn() {
-      let assert Ok(counter) = ref.start()
-      ref.next(counter) |> expect.to_equal(Ok("1"))
+pub fn can_stop_a_counter_without_hanging_test() {
+  let assert Ok(counter) = ref.start()
+  assert ref.next(counter) == Ok("1")
 
-      ref.stop(counter)
-      process.sleep(10)
+  ref.stop(counter)
+  process.sleep(10)
+}
 
-      ref.next(counter) |> expect.to_equal(Error(Nil))
-    }),
-  ])
+pub fn returns_an_error_after_the_counter_stops_test() {
+  let assert Ok(counter) = ref.start()
+  assert ref.next(counter) == Ok("1")
+
+  ref.stop(counter)
+  process.sleep(10)
+
+  assert ref.next(counter) == Error(Nil)
 }

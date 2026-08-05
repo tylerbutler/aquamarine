@@ -15,8 +15,6 @@ import gleam/json
 import gleam/option.{None, Some}
 import gleam/result
 import roost/frame as roost_frame
-import startest.{describe, it}
-import startest/expect
 import support/fake_transport as fake
 
 // 24 hours — long enough that no test in this file ever sees a heartbeat tick.
@@ -79,394 +77,362 @@ fn connect_with_fake(fake_socket: fake.FakeSocket) -> channel.Channel {
   ch
 }
 
-// -- Tests ------------------------------------------------------------------
+// -- channel.connect_with ---------------------------------------------------
 
-pub fn channel_tests() {
-  describe("channel", [
-    describe("channel.connect_with", [
-      it("returns Ok on a matching ok join reply", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+pub fn connect_with_returns_ok_on_a_matching_ok_join_reply_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
 
-        // The very first outbound frame must be the join.
-        let assert [join_frame, ..] = fake.outbound(f)
-        let assert Ok(decoded) = phoenix.codec().decode(join_frame)
-        decoded.event |> expect.to_equal(roost_frame.join_event)
-        decoded.topic |> expect.to_equal(test_topic)
+  // The very first outbound frame must be the join.
+  let assert [join_frame, ..] = fake.outbound(f)
+  let assert Ok(decoded) = phoenix.codec().decode(join_frame)
+  assert decoded.event == roost_frame.join_event
+  assert decoded.topic == test_topic
 
-        let assert Ok(Nil) = channel.close(ch)
-        fake.shutdown(f)
-      }),
-      it("maps a non-ok status to JoinRejected", fn() {
-        let f = fake.start()
-        fake.enqueue_text(f, error_join_reply("1"))
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
 
-        channel.connect_with(
-          fake.connector_for(f),
-          test_topic,
-          empty_payload(),
-          phoenix.codec(),
-          no_heartbeat,
-        )
-        |> expect.to_equal(Error(error.JoinRejected("error")))
+pub fn connect_with_maps_a_non_ok_status_to_join_rejected_test() {
+  let f = fake.start()
+  fake.enqueue_text(f, error_join_reply("1"))
 
-        // Cleanup must close the underlying transport.
-        fake.is_closed(f) |> expect.to_equal(True)
-        fake.shutdown(f)
-      }),
-      it(
-        "maps a malformed reply payload to JoinRejected(\"malformed reply\")",
-        fn() {
-          let f = fake.start()
-          fake.enqueue_text(f, malformed_reply("1"))
+  assert channel.connect_with(
+      fake.connector_for(f),
+      test_topic,
+      empty_payload(),
+      phoenix.codec(),
+      no_heartbeat,
+    )
+    == Error(error.JoinRejected("error"))
 
-          channel.connect_with(
-            fake.connector_for(f),
-            test_topic,
-            empty_payload(),
-            phoenix.codec(),
-            no_heartbeat,
-          )
-          |> expect.to_equal(Error(error.JoinRejected("malformed reply")))
+  // Cleanup must close the underlying transport.
+  assert fake.is_closed(f)
+  fake.shutdown(f)
+}
 
-          fake.is_closed(f) |> expect.to_equal(True)
-          fake.shutdown(f)
-        },
-      ),
-      it("maps undecodable text on the reply channel to DecodeFailed", fn() {
-        let f = fake.start()
-        fake.enqueue_text(f, "this is not valid json")
+pub fn connect_with_maps_a_malformed_reply_payload_to_join_rejected_test() {
+  let f = fake.start()
+  fake.enqueue_text(f, malformed_reply("1"))
 
-        let result =
-          channel.connect_with(
-            fake.connector_for(f),
-            test_topic,
-            empty_payload(),
-            phoenix.codec(),
-            no_heartbeat,
-          )
+  assert channel.connect_with(
+      fake.connector_for(f),
+      test_topic,
+      empty_payload(),
+      phoenix.codec(),
+      no_heartbeat,
+    )
+    == Error(error.JoinRejected("error"))
 
-        case result {
-          Error(error.DecodeFailed(_)) -> Nil
-          other -> {
-            other
-            |> expect.to_equal(
-              Error(error.DecodeFailed(
-                // Force a mismatch with detailed diff if this branch ever fires.
-                phoenix.codec().decode("[")
-                |> fn(r) {
-                  case r {
-                    Error(e) -> e
-                    Ok(_) -> panic as "decoder unexpectedly succeeded"
-                  }
-                },
-              )),
-            )
-          }
-        }
+  assert fake.is_closed(f)
+  fake.shutdown(f)
+}
 
-        fake.is_closed(f) |> expect.to_equal(True)
-        fake.shutdown(f)
-      }),
-      it("maps a Closed frame during handshake to ChannelClosed", fn() {
-        let f = fake.start()
-        fake.enqueue_closed(f)
+pub fn connect_with_maps_undecodable_reply_text_to_decode_failed_test() {
+  let f = fake.start()
+  fake.enqueue_text(f, "this is not valid json")
 
-        channel.connect_with(
-          fake.connector_for(f),
-          test_topic,
-          empty_payload(),
-          phoenix.codec(),
-          no_heartbeat,
-        )
-        |> expect.to_equal(Error(error.ChannelClosed))
+  let assert Error(error.DecodeFailed(_)) =
+    channel.connect_with(
+      fake.connector_for(f),
+      test_topic,
+      empty_payload(),
+      phoenix.codec(),
+      no_heartbeat,
+    )
 
-        fake.is_closed(f) |> expect.to_equal(True)
-        fake.shutdown(f)
-      }),
-      it("propagates a send-side error on the join frame and cleans up", fn() {
-        let f = fake.start()
-        fake.enqueue_send_error(f, error.Transport(error.Timeout))
+  assert fake.is_closed(f)
+  fake.shutdown(f)
+}
 
-        channel.connect_with(
-          fake.connector_for(f),
-          test_topic,
-          empty_payload(),
-          phoenix.codec(),
-          no_heartbeat,
-        )
-        |> expect.to_equal(Error(error.Transport(error.Timeout)))
+pub fn connect_with_maps_a_closed_frame_during_handshake_to_channel_closed_test() {
+  let f = fake.start()
+  fake.enqueue_closed(f)
 
-        fake.is_closed(f) |> expect.to_equal(True)
-        fake.shutdown(f)
-      }),
-      it("skips non-matching frames before the join reply", fn() {
-        let f = fake.start()
-        // Some unrelated server push arrives before the reply for ref "1".
-        fake.enqueue_text(
-          f,
-          roost_frame.encode(
-            join_ref: None,
-            ref: None,
-            topic: test_topic,
-            event: "noise",
-            payload: empty_payload(),
-          ),
-        )
-        // Then a binary frame which the codec also skips.
-        fake.enqueue_binary(f, <<1, 2, 3>>)
-        // Finally the actual join reply.
-        fake.enqueue_text(f, ok_join_reply("1"))
+  assert channel.connect_with(
+      fake.connector_for(f),
+      test_topic,
+      empty_payload(),
+      phoenix.codec(),
+      no_heartbeat,
+    )
+    == Error(error.ChannelClosed)
 
-        let assert Ok(ch) =
-          channel.connect_with(
-            fake.connector_for(f),
-            test_topic,
-            empty_payload(),
-            phoenix.codec(),
-            no_heartbeat,
-          )
-        let assert Ok(Nil) = channel.close(ch)
-        fake.shutdown(f)
-      }),
-      it("propagates a connector failure verbatim", fn() {
-        let connector =
-          fake.failing_connector(error.Transport(error.ConnectionError("nope")))
-        channel.connect_with(
-          connector,
-          test_topic,
-          empty_payload(),
-          phoenix.codec(),
-          no_heartbeat,
-        )
-        |> expect.to_equal(
-          Error(error.Transport(error.ConnectionError("nope"))),
-        )
-      }),
-    ]),
-    describe("channel.push", [
-      it("encodes the topic, event, payload, and a fresh ref", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+  assert fake.is_closed(f)
+  fake.shutdown(f)
+}
 
-        let assert Ok(Nil) =
-          channel.push(ch, "say", json.object([#("body", json.string("hi"))]))
+pub fn connect_with_propagates_a_send_side_error_on_the_join_frame_test() {
+  let f = fake.start()
+  fake.enqueue_send_error(f, error.Transport(error.Timeout))
 
-        // outbound: [join, push]
-        let assert [_, push_frame] = fake.outbound(f)
-        let assert Ok(decoded) = phoenix.codec().decode(push_frame)
-        decoded.topic |> expect.to_equal(test_topic)
-        decoded.event |> expect.to_equal("say")
-        decoded.join_ref |> expect.to_equal(Some("1"))
-        // Join consumed ref 1; the next allocation is "2".
-        decoded.ref |> expect.to_equal(Some("2"))
+  assert channel.connect_with(
+      fake.connector_for(f),
+      test_topic,
+      empty_payload(),
+      phoenix.codec(),
+      no_heartbeat,
+    )
+    == Error(error.Transport(error.Timeout))
 
-        let assert Ok(Nil) = channel.close(ch)
-        fake.shutdown(f)
-      }),
-      it("maps a transport send failure to the underlying error", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+  assert fake.is_closed(f)
+  fake.shutdown(f)
+}
 
-        fake.enqueue_send_error(
-          f,
-          error.Transport(error.ConnectionDown("gone")),
-        )
+pub fn connect_with_skips_non_matching_frames_before_the_join_reply_test() {
+  let f = fake.start()
+  // Some unrelated server push arrives before the reply for ref "1".
+  fake.enqueue_text(
+    f,
+    roost_frame.encode(
+      join_ref: None,
+      ref: None,
+      topic: test_topic,
+      event: "noise",
+      payload: empty_payload(),
+    ),
+  )
+  // Then a binary frame which the codec also skips.
+  fake.enqueue_binary(f, <<1, 2, 3>>)
+  // Finally the actual join reply.
+  fake.enqueue_text(f, ok_join_reply("1"))
 
-        channel.push(ch, "say", empty_payload())
-        |> expect.to_equal(Error(error.Transport(error.ConnectionDown("gone"))))
+  let assert Ok(ch) =
+    channel.connect_with(
+      fake.connector_for(f),
+      test_topic,
+      empty_payload(),
+      phoenix.codec(),
+      no_heartbeat,
+    )
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
 
-        let assert Ok(Nil) = channel.close(ch)
-        fake.shutdown(f)
-      }),
-    ]),
-    describe("channel.receive", [
-      it("returns the next application frame", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+pub fn connect_with_propagates_a_connector_failure_verbatim_test() {
+  let connector =
+    fake.failing_connector(error.Transport(error.ConnectionError("nope")))
 
-        let server_push =
-          roost_frame.encode(
-            join_ref: None,
-            ref: None,
-            topic: test_topic,
-            event: "tick",
-            payload: json.object([#("n", json.int(7))]),
-          )
-        fake.enqueue_text(f, server_push)
+  assert channel.connect_with(
+      connector,
+      test_topic,
+      empty_payload(),
+      phoenix.codec(),
+      no_heartbeat,
+    )
+    == Error(error.Transport(error.ConnectionError("nope")))
+}
 
-        let assert Ok(incoming) = channel.receive(ch)
-        incoming.event |> expect.to_equal("tick")
-        incoming.topic |> expect.to_equal(test_topic)
-        decode_n(incoming.payload) |> expect.to_equal(Ok(7))
+// -- channel.push -----------------------------------------------------------
 
-        let assert Ok(Nil) = channel.close(ch)
-        fake.shutdown(f)
-      }),
-      it("skips a binary frame and returns the next text frame", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+pub fn push_encodes_the_topic_event_payload_and_a_fresh_ref_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
 
-        fake.enqueue_binary(f, <<255, 0, 1>>)
-        fake.enqueue_text(
-          f,
-          roost_frame.encode(
-            join_ref: None,
-            ref: None,
-            topic: test_topic,
-            event: "after_binary",
-            payload: empty_payload(),
-          ),
-        )
+  let assert Ok(Nil) =
+    channel.push(ch, "say", json.object([#("body", json.string("hi"))]))
 
-        let assert Ok(incoming) = channel.receive(ch)
-        incoming.event |> expect.to_equal("after_binary")
+  // outbound: [join, push]
+  let assert [_, push_frame] = fake.outbound(f)
+  let assert Ok(decoded) = phoenix.codec().decode(push_frame)
+  assert decoded.topic == test_topic
+  assert decoded.event == "say"
+  assert decoded.join_ref == Some("1")
+  // Join consumed ref 1; the next allocation is "2".
+  assert decoded.ref == Some("2")
 
-        let assert Ok(Nil) = channel.close(ch)
-        fake.shutdown(f)
-      }),
-      it("skips a heartbeat reply and returns the next channel frame", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
 
-        // Heartbeat reply: phx_reply on the reserved heartbeat topic.
-        fake.enqueue_text(
-          f,
-          roost_frame.encode_reply(
-            join_ref: None,
-            ref: "99",
-            topic: roost_frame.heartbeat_topic,
-            status: roost_frame.StatusOk,
-            response: empty_payload(),
-          ),
-        )
-        fake.enqueue_text(
-          f,
-          roost_frame.encode(
-            join_ref: None,
-            ref: None,
-            topic: test_topic,
-            event: "after_hb",
-            payload: empty_payload(),
-          ),
-        )
+pub fn push_maps_a_transport_send_failure_to_the_underlying_error_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
 
-        let assert Ok(incoming) = channel.receive(ch)
-        incoming.event |> expect.to_equal("after_hb")
+  fake.enqueue_send_error(f, error.Transport(error.ConnectionDown("gone")))
 
-        let assert Ok(Nil) = channel.close(ch)
-        fake.shutdown(f)
-      }),
-      it("returns ChannelClosed on a phx_close event", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+  assert channel.push(ch, "say", empty_payload())
+    == Error(error.Transport(error.ConnectionDown("gone")))
 
-        fake.enqueue_text(
-          f,
-          roost_frame.encode(
-            join_ref: None,
-            ref: None,
-            topic: test_topic,
-            event: roost_frame.close_event,
-            payload: empty_payload(),
-          ),
-        )
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
 
-        channel.receive(ch) |> expect.to_equal(Error(error.ChannelClosed))
+// -- channel.receive --------------------------------------------------------
 
-        let assert Ok(Nil) = channel.close(ch)
-        fake.shutdown(f)
-      }),
-      it("returns ChannelClosed on a phx_error event", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+pub fn receive_returns_the_next_application_frame_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
 
-        fake.enqueue_text(
-          f,
-          roost_frame.encode(
-            join_ref: None,
-            ref: None,
-            topic: test_topic,
-            event: roost_frame.error_event,
-            payload: empty_payload(),
-          ),
-        )
+  let server_push =
+    roost_frame.encode(
+      join_ref: None,
+      ref: None,
+      topic: test_topic,
+      event: "tick",
+      payload: json.object([#("n", json.int(7))]),
+    )
+  fake.enqueue_text(f, server_push)
 
-        channel.receive(ch) |> expect.to_equal(Error(error.ChannelClosed))
+  let assert Ok(incoming) = channel.receive(ch)
+  assert incoming.event == "tick"
+  assert incoming.topic == test_topic
+  assert decode_n(incoming.payload) == Ok(7)
 
-        let assert Ok(Nil) = channel.close(ch)
-        fake.shutdown(f)
-      }),
-      it("returns ChannelClosed on a Closed frame", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
 
-        fake.enqueue_closed(f)
+pub fn receive_skips_a_binary_frame_and_returns_the_next_text_frame_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
 
-        channel.receive(ch) |> expect.to_equal(Error(error.ChannelClosed))
+  fake.enqueue_binary(f, <<255, 0, 1>>)
+  fake.enqueue_text(
+    f,
+    roost_frame.encode(
+      join_ref: None,
+      ref: None,
+      topic: test_topic,
+      event: "after_binary",
+      payload: empty_payload(),
+    ),
+  )
 
-        let assert Ok(Nil) = channel.close(ch)
-        fake.shutdown(f)
-      }),
-      it("returns DecodeFailed on a malformed text frame", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+  let assert Ok(incoming) = channel.receive(ch)
+  assert incoming.event == "after_binary"
 
-        fake.enqueue_text(f, "not json")
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
 
-        case channel.receive(ch) {
-          Error(error.DecodeFailed(_)) -> Nil
-          other ->
-            other
-            |> expect.to_equal(
-              Error(error.DecodeFailed(
-                // Force a clear mismatch if a non-DecodeFailed error sneaks in.
-                phoenix.codec().decode("[")
-                |> fn(r) {
-                  case r {
-                    Error(e) -> e
-                    Ok(_) -> panic as "decoder unexpectedly succeeded"
-                  }
-                },
-              )),
-            )
-        }
+pub fn receive_skips_a_heartbeat_reply_and_returns_the_next_channel_frame_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
 
-        let assert Ok(Nil) = channel.close(ch)
-        fake.shutdown(f)
-      }),
-    ]),
-    describe("channel.close", [
-      it("closes the transport and stops the heartbeat actor", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+  // Heartbeat reply: phx_reply on the reserved heartbeat topic.
+  fake.enqueue_text(
+    f,
+    roost_frame.encode_reply(
+      join_ref: None,
+      ref: "99",
+      topic: roost_frame.heartbeat_topic,
+      status: roost_frame.StatusOk,
+      response: empty_payload(),
+    ),
+  )
+  fake.enqueue_text(
+    f,
+    roost_frame.encode(
+      join_ref: None,
+      ref: None,
+      topic: test_topic,
+      event: "after_hb",
+      payload: empty_payload(),
+    ),
+  )
 
-        let assert Ok(Nil) = channel.close(ch)
+  let assert Ok(incoming) = channel.receive(ch)
+  assert incoming.event == "after_hb"
 
-        fake.is_closed(f) |> expect.to_equal(True)
-        fake.shutdown(f)
-      }),
-      it("propagates a transport close error", fn() {
-        let f = fake.start()
-        let ch = connect_with_fake(f)
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
 
-        fake.enqueue_close_error(
-          f,
-          error.Transport(error.ConnectionError("close failed")),
-        )
+pub fn receive_returns_channel_closed_on_a_phx_close_event_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
 
-        channel.close(ch)
-        |> expect.to_equal(
-          Error(error.Transport(error.ConnectionError("close failed"))),
-        )
+  fake.enqueue_text(
+    f,
+    roost_frame.encode(
+      join_ref: None,
+      ref: None,
+      topic: test_topic,
+      event: roost_frame.close_event,
+      payload: empty_payload(),
+    ),
+  )
 
-        // Give the heartbeat/counter actors a tick to fully exit before the
-        // fake socket is shut down.
-        process.sleep(5)
-        fake.shutdown(f)
-      }),
-    ]),
-  ])
+  assert channel.receive(ch) == Error(error.ChannelClosed)
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+pub fn receive_returns_channel_closed_on_a_phx_error_event_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
+
+  fake.enqueue_text(
+    f,
+    roost_frame.encode(
+      join_ref: None,
+      ref: None,
+      topic: test_topic,
+      event: roost_frame.error_event,
+      payload: empty_payload(),
+    ),
+  )
+
+  assert channel.receive(ch) == Error(error.ChannelClosed)
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+pub fn receive_returns_channel_closed_on_a_closed_frame_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
+
+  fake.enqueue_closed(f)
+
+  assert channel.receive(ch) == Error(error.ChannelClosed)
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+pub fn receive_returns_decode_failed_on_a_malformed_text_frame_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
+
+  fake.enqueue_text(f, "not json")
+
+  let assert Error(error.DecodeFailed(_)) = channel.receive(ch)
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+// -- channel.close ----------------------------------------------------------
+
+pub fn close_closes_the_transport_and_stops_the_heartbeat_actor_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
+
+  let assert Ok(Nil) = channel.close(ch)
+
+  assert fake.is_closed(f)
+  fake.shutdown(f)
+}
+
+pub fn close_propagates_a_transport_close_error_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
+
+  fake.enqueue_close_error(
+    f,
+    error.Transport(error.ConnectionError("close failed")),
+  )
+
+  assert channel.close(ch)
+    == Error(error.Transport(error.ConnectionError("close failed")))
+
+  // Give the heartbeat/counter actors a tick to fully exit before the
+  // fake socket is shut down.
+  process.sleep(5)
+  fake.shutdown(f)
 }
 
 fn decode_n(payload) -> Result(Int, Nil) {

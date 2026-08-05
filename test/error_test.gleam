@@ -2,25 +2,19 @@ import aquamarine
 import aquamarine/error
 import aquamarine/phoenix
 import gleam/json
-import startest.{describe, it}
-import startest/expect
 
-pub fn error_tests() {
-  describe("public error surface", [
-    it("maps transport failures to Aquamarine-owned errors", fn() {
-      let result =
-        aquamarine.connect(
-          host: "127.0.0.1",
-          port: 0,
-          path: "/socket/websocket",
-          topic: "test:lobby",
-          payload: json.object([]),
-          codec: phoenix.codec(),
-        )
+pub fn maps_transport_failures_to_aquamarine_owned_errors_test() {
+  let result =
+    aquamarine.connect(
+      host: "127.0.0.1",
+      port: 0,
+      path: "/socket/websocket",
+      topic: "test:lobby",
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    )
 
-      result_is_transport_error(result) |> expect.to_equal(True)
-    }),
-  ])
+  assert result_is_transport_error(result)
 }
 
 fn result_is_transport_error(result) -> Bool {

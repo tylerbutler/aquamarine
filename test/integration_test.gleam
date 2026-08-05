@@ -9,100 +9,121 @@ import aquamarine/error
 import aquamarine/phoenix
 import beryl
 import beryl/channel as bchannel
-import beryl/transport/mist as mist_transport
+import beryl/supervisor
 import beryl/wire
+import beryl_mist as mist_transport
 import gleam/bytes_tree
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http/response
 import gleam/json
 import gleam/option.{Some}
+import gleam/otp/actor
+import gleam/otp/static_supervisor
 import gleam/result
 import mist
-import startest.{describe, it}
-import startest/expect
-
-const test_port: Int = 47_891
 
 const test_path: String = "/socket/websocket"
 
-pub fn integration_tests() {
-  let channels = start_beryl()
-  let _server = start_mist(channels)
-
-  describe("aquamarine <-> beryl", [
-    it("joins a channel and receives a server push", fn() {
-      let assert Ok(ch) =
-        channel.connect(
-          host: "127.0.0.1",
-          port: test_port,
-          path: test_path,
-          topic: "test:lobby",
-          payload: json.object([#("hello", json.bool(True))]),
-          codec: phoenix.codec(),
-        )
-
-      // Give the server a moment to register the socket as a subscriber.
-      process.sleep(50)
-
-      beryl.broadcast(
-        channels,
-        "test:lobby",
-        "tick",
-        json.object([#("n", json.int(42))]),
-      )
-
-      let assert Ok(incoming) = channel.receive(ch)
-      incoming.event |> expect.to_equal("tick")
-      incoming.topic |> expect.to_equal("test:lobby")
-      decode_n(incoming.payload) |> expect.to_equal(Ok(42))
-
-      let assert Ok(Nil) = channel.close(ch)
-      Nil
-    }),
-    it("round-trips a client push through the public facade", fn() {
-      let assert Ok(ch) =
-        aquamarine.connect(
-          host: "127.0.0.1",
-          port: test_port,
-          path: test_path,
-          topic: "test:echo",
-          payload: json.object([]),
-          codec: phoenix.codec(),
-        )
-
-      let assert Ok(Nil) =
-        aquamarine.push(
-          ch,
-          "say",
-          json.object([#("body", json.string("hello"))]),
-        )
-
-      let assert Ok(incoming) = aquamarine.receive(ch)
-      incoming.event |> expect.to_equal(phoenix.codec().reply_event)
-      incoming.topic |> expect.to_equal("test:echo")
-      decode_body(incoming.payload) |> expect.to_equal(Ok("hello"))
-
-      let assert Ok(Nil) = aquamarine.close(ch)
-      Nil
-    }),
-    it("surfaces a server-side join rejection", fn() {
-      channel.connect(
-        host: "127.0.0.1",
-        port: test_port,
-        path: test_path,
-        topic: "test:rejected",
-        payload: json.object([]),
-        codec: phoenix.codec(),
-      )
-      |> expect.to_equal(Error(error.JoinRejected("error")))
-    }),
-  ])
+/// A running beryl instance plus the port its mist listener bound to.
+type TestServer {
+  TestServer(channels: beryl.Channels, port: Int)
 }
 
-fn start_beryl() -> beryl.Channels {
-  let assert Ok(channels) = beryl.start(beryl.config(wire.phoenix_codec()))
+pub fn joins_a_channel_and_receives_a_server_push_test() {
+  let server = start_server()
 
+  let assert Ok(ch) =
+    channel.connect(
+      host: "127.0.0.1",
+      port: server.port,
+      path: test_path,
+      topic: "test:lobby",
+      payload: json.object([#("hello", json.bool(True))]),
+      codec: phoenix.codec(),
+    )
+
+  // Give the server a moment to register the socket as a subscriber.
+  process.sleep(50)
+
+  beryl.broadcast(
+    server.channels,
+    "test:lobby",
+    "tick",
+    json.object([#("n", json.int(42))]),
+  )
+
+  let assert Ok(incoming) = channel.receive(ch)
+  assert incoming.event == "tick"
+  assert incoming.topic == "test:lobby"
+  assert decode_n(incoming.payload) == Ok(42)
+
+  let assert Ok(Nil) = channel.close(ch)
+}
+
+pub fn round_trips_a_client_push_through_the_public_facade_test() {
+  let server = start_server()
+
+  let assert Ok(ch) =
+    aquamarine.connect(
+      host: "127.0.0.1",
+      port: server.port,
+      path: test_path,
+      topic: "test:echo",
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    )
+
+  let assert Ok(Nil) =
+    aquamarine.push(ch, "say", json.object([#("body", json.string("hello"))]))
+
+  let assert Ok(incoming) = aquamarine.receive(ch)
+  assert incoming.event == phoenix.codec().reply_event
+  assert incoming.topic == "test:echo"
+  assert decode_body(incoming.payload) == Ok("hello")
+
+  let assert Ok(Nil) = aquamarine.close(ch)
+}
+
+pub fn surfaces_a_server_side_join_rejection_test() {
+  let server = start_server()
+
+  assert channel.connect(
+      host: "127.0.0.1",
+      port: server.port,
+      path: test_path,
+      topic: "test:rejected",
+      payload: json.object([]),
+      codec: phoenix.codec(),
+    )
+    == Error(error.JoinRejected("error"))
+}
+
+/// Stand up a beryl instance with the test channels registered and a mist
+/// listener bound to an ephemeral port.
+fn start_server() -> TestServer {
+  let assert Ok(channels) = start_supervised(beryl.config(wire.phoenix_codec()))
+  register_channels(channels)
+  TestServer(channels, start_mist(channels))
+}
+
+/// Start a supervised channel system for tests.
+///
+/// beryl exposes no public unsupervised start, so tests stand up a real
+/// supervision tree the way an application would.
+fn start_supervised(
+  config: beryl.Config,
+) -> Result(beryl.Channels, actor.StartError) {
+  let supervised = supervisor.config(config)
+  use _root <- result.map(
+    static_supervisor.new(static_supervisor.OneForOne)
+    |> static_supervisor.add(supervisor.start(supervised))
+    |> static_supervisor.start(),
+  )
+  supervisor.channels(supervised)
+}
+
+fn register_channels(channels: beryl.Channels) -> Nil {
   let lobby_channel =
     bchannel.new(fn(_topic, _payload, sock) {
       bchannel.JoinOk(
@@ -137,10 +158,13 @@ fn start_beryl() -> beryl.Channels {
     })
   let assert Ok(_) = beryl.register(channels, "test:rejected", rejected_channel)
 
-  channels
+  Nil
 }
 
-fn start_mist(channels: beryl.Channels) {
+/// Start a mist listener on an ephemeral port and return the bound port.
+fn start_mist(channels: beryl.Channels) -> Int {
+  let port_subject = process.new_subject()
+
   let handler = fn(req) {
     mist_transport.upgrade(
       req,
@@ -153,12 +177,17 @@ fn start_mist(channels: beryl.Channels) {
     )
   }
 
-  let assert Ok(server) =
+  let assert Ok(_server) =
     mist.new(handler)
-    |> mist.port(test_port)
+    |> mist.port(0)
+    |> mist.bind("127.0.0.1")
+    |> mist.after_start(fn(port, _scheme, _ip_address) {
+      process.send(port_subject, port)
+    })
     |> mist.start
 
-  server
+  let assert Ok(port) = process.receive(port_subject, 1000)
+  port
 }
 
 fn decode_n(payload) -> Result(Int, Nil) {
