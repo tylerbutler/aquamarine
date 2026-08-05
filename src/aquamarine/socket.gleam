@@ -14,11 +14,11 @@
 ////
 //// ## Process ownership
 ////
-//// The actor owns the transport and the inbound sink. The *subscriber*
-//// subject is owned by whoever created it — normally the process that called
-//// `channel.connect` — and only that process may receive from it.
-//// [`send`](#send), [`close`](#close), and
-//// [`send_awaiting_reply`](#send_awaiting_reply) are safe from any process.
+//// The actor owns everything with state: the transport, the inbound sink, the
+//// ref counter, and the heartbeat timer. The *subscriber* subject is owned by
+//// whoever created it — normally the process that called `channel.connect` —
+//// and only that process may receive from it. [`push`](#push),
+//// [`join`](#join), and [`close`](#close) are safe from any process.
 ////
 //// This module is `@internal` for now. It becomes public API once callers
 //// need to open a socket and join several topics on it.
@@ -86,10 +86,17 @@ type Waiter {
 
 type State {
   State(
+    self: Subject(Message),
     transport: Transport,
     codec: Codec,
     subscriber: Subject(Event),
     waiter: Option(Waiter),
+    /// How often to emit a heartbeat, and the timer for the next one. The
+    /// heartbeat is a self-message on a timer rather than a second actor —
+    /// once the socket owns both the counter and the transport, that is all it
+    /// ever needed to be.
+    heartbeat_ms: Int,
+    heartbeat_timer: Option(process.Timer),
     /// Next ref to mint. Refs are minted inside the actor, in the same handler
     /// that sends the frame carrying them, so ref order and send order cannot
     /// diverge.
@@ -111,6 +118,7 @@ pub fn start(
   connector: Connector,
   codec: Codec,
   subscriber: Subject(Event),
+  heartbeat_ms: Int,
 ) -> Result(Socket, AquamarineError) {
   // The connector runs inside the actor's initialiser, where the only failure
   // channel is a `String`. Route the typed error out of band.
@@ -131,10 +139,17 @@ pub fn start(
             |> process.select_map(sink, Inbound)
 
           actor.initialised(State(
+            self: self,
             transport: tx,
             codec: codec,
             subscriber: subscriber,
             waiter: None,
+            heartbeat_ms: heartbeat_ms,
+            heartbeat_timer: Some(process.send_after(
+              self,
+              heartbeat_ms,
+              Heartbeat,
+            )),
             next_ref: 1,
             gone: False,
           ))
@@ -171,12 +186,6 @@ pub fn push(
   payload: json.Json,
 ) -> Nil {
   process.send(socket.subject, Push(join_ref, topic, event, payload))
-}
-
-/// Ask the socket to emit one heartbeat frame. Fire-and-forget.
-@internal
-pub fn heartbeat(socket: Socket) -> Nil {
-  process.send(socket.subject, Heartbeat)
 }
 
 /// Join a topic and block until the server replies.
@@ -252,11 +261,21 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
         }
       }
 
+    // A gone socket stops beating: no frame, and no rescheduling.
     Heartbeat ->
       case state.gone {
-        True -> actor.continue(state)
+        True -> actor.continue(State(..state, heartbeat_timer: None))
         False -> {
           let #(ref, state) = mint_ref(state)
+          let state =
+            State(
+              ..state,
+              heartbeat_timer: Some(process.send_after(
+                state.self,
+                state.heartbeat_ms,
+                Heartbeat,
+              )),
+            )
           case state.transport.send_text(state.codec.encode_heartbeat(ref)) {
             Ok(Nil) -> actor.continue(state)
             Error(err) -> actor.continue(lose_socket(state, err))
@@ -265,6 +284,7 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
       }
 
     Close(reply_to) -> {
+      cancel_heartbeat(state)
       // Close the transport even when the socket is already known to be gone —
       // the underlying resource still needs releasing. Its complaint about
       // being closed twice is not worth reporting, though.
@@ -363,8 +383,20 @@ fn lose_socket(state: State, err: AquamarineError) -> State {
         Some(waiter) -> process.send(waiter.reply_to, Error(err))
         None -> Nil
       }
-      State(..state, waiter: None, gone: True)
+      cancel_heartbeat(state)
+      State(..state, waiter: None, heartbeat_timer: None, gone: True)
     }
+  }
+}
+
+/// Cancel the pending heartbeat so no stray tick outlives the actor.
+fn cancel_heartbeat(state: State) -> Nil {
+  case state.heartbeat_timer {
+    Some(timer) -> {
+      let _ = process.cancel_timer(timer)
+      Nil
+    }
+    None -> Nil
   }
 }
 

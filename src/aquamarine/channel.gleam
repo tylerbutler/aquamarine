@@ -1,10 +1,9 @@
 //// Channel client lifecycle.
 ////
 //// A `Channel` is a handle onto a running socket actor joined to a single
-//// topic, plus the background heartbeat that keeps the connection healthy.
-//// The socket lives in its own process and owns the transport, the codec, and
-//// the ref counter; the channel holds a subject that inbound events are
-//// delivered to.
+//// topic. The socket lives in its own process and owns everything with
+//// state — the transport, the codec, the ref counter, and the heartbeat
+//// timer. The channel holds a subject that inbound events are delivered to.
 ////
 //// ## Process ownership
 ////
@@ -16,7 +15,6 @@
 
 import aquamarine/codec.{type Codec, type Incoming}
 import aquamarine/error.{type AquamarineError}
-import aquamarine/heartbeat
 import aquamarine/socket.{type Socket}
 import aquamarine/transport.{type Connector}
 import gleam/erlang/process.{type Subject}
@@ -39,7 +37,6 @@ pub opaque type Channel {
     events: Subject(socket.Event),
     topic: String,
     join_ref: String,
-    heartbeat: heartbeat.Heartbeat,
   )
 }
 
@@ -78,18 +75,15 @@ pub fn connect_with(
   heartbeat_ms: Int,
 ) -> Result(Channel, AquamarineError) {
   let events = process.new_subject()
-  use sock <- result.try(socket.start(connector, codec, events))
+  use sock <- result.try(socket.start(connector, codec, events, heartbeat_ms))
 
   use joined <- result.try(join(sock, topic, payload))
-
-  use hb <- result.try(start_heartbeat(sock, heartbeat_ms))
 
   Ok(Channel(
     socket: sock,
     events: events,
     topic: topic,
     join_ref: joined.join_ref,
-    heartbeat: hb,
   ))
 }
 
@@ -115,9 +109,9 @@ pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
   }
 }
 
-/// Close the channel and underlying socket. The heartbeat is stopped first.
+/// Close the channel and underlying socket. Stopping the socket actor stops
+/// the heartbeat with it.
 pub fn close(channel: Channel) -> Result(Nil, AquamarineError) {
-  heartbeat.stop(channel.heartbeat)
   socket.close(channel.socket)
 }
 
@@ -137,19 +131,6 @@ fn join(
     Error(err) -> {
       let _ = socket.close(sock)
       Error(err)
-    }
-  }
-}
-
-fn start_heartbeat(
-  sock: Socket,
-  interval_ms: Int,
-) -> Result(heartbeat.Heartbeat, AquamarineError) {
-  case heartbeat.start(fn() { socket.heartbeat(sock) }, interval_ms) {
-    Ok(hb) -> Ok(hb)
-    Error(_) -> {
-      let _ = socket.close(sock)
-      Error(error.InternalError("failed to start heartbeat actor"))
     }
   }
 }

@@ -12,6 +12,7 @@ import aquamarine/phoenix
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import roost/frame as roost_frame
@@ -338,15 +339,7 @@ pub fn refs_are_monotonic_unique_and_assigned_in_send_order_test() {
 /// Heartbeats draw on the same counter as pushes — there is only one.
 pub fn heartbeat_frames_share_the_sockets_ref_sequence_test() {
   let f = fake.start()
-  fake.enqueue_text(f, ok_join_reply("1"))
-  let assert Ok(ch) =
-    channel.connect_with(
-      fake.connector_for(f),
-      test_topic,
-      empty_payload(),
-      phoenix.codec(),
-      20,
-    )
+  let ch = connect_with_beating_fake(f, 20)
 
   channel.push(ch, "one", empty_payload())
   process.sleep(60)
@@ -358,6 +351,98 @@ pub fn heartbeat_frames_share_the_sockets_ref_sequence_test() {
 
   let assert Ok(Nil) = channel.close(ch)
   fake.shutdown(f)
+}
+
+// -- heartbeat --------------------------------------------------------------
+
+pub fn heartbeats_are_emitted_on_the_configured_interval_test() {
+  let f = fake.start()
+  let ch = connect_with_beating_fake(f, 20)
+
+  process.sleep(110)
+  let beats = heartbeat_frames(f)
+
+  // Four intervals fit in 110ms; allow slack either side for scheduler jitter.
+  assert beats >= 3
+  assert beats <= 6
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+/// The timer must not outlive the socket. Nothing cancels it from outside —
+/// the actor cancels its own pending tick on the way down.
+pub fn no_heartbeat_frames_are_sent_after_close_test() {
+  let f = fake.start()
+  let ch = connect_with_beating_fake(f, 20)
+
+  process.sleep(50)
+  let assert Ok(Nil) = channel.close(ch)
+  let at_close = heartbeat_frames(f)
+  assert at_close > 0
+
+  process.sleep(100)
+  assert heartbeat_frames(f) == at_close
+
+  fake.shutdown(f)
+}
+
+/// The heartbeat's own replies are bookkeeping and never reach the caller.
+pub fn heartbeat_replies_never_surface_to_receive_test() {
+  let f = fake.start()
+  let ch = connect_with_beating_fake(f, 20)
+
+  // Answer whatever heartbeats have gone out, then send a real frame.
+  process.sleep(50)
+  fake.enqueue_text(
+    f,
+    roost_frame.encode_reply(
+      join_ref: None,
+      ref: "2",
+      topic: roost_frame.heartbeat_topic,
+      status: roost_frame.StatusOk,
+      response: empty_payload(),
+    ),
+  )
+  fake.enqueue_text(
+    f,
+    roost_frame.encode(
+      join_ref: None,
+      ref: None,
+      topic: test_topic,
+      event: "real",
+      payload: empty_payload(),
+    ),
+  )
+
+  let assert Ok(incoming) = channel.receive(ch)
+  assert incoming.event == "real"
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+/// Connect through a fake with a short heartbeat interval.
+fn connect_with_beating_fake(
+  fake_socket: fake.FakeSocket,
+  interval_ms: Int,
+) -> channel.Channel {
+  fake.enqueue_text(fake_socket, ok_join_reply("1"))
+  let assert Ok(ch) =
+    channel.connect_with(
+      fake.connector_for(fake_socket),
+      test_topic,
+      empty_payload(),
+      phoenix.codec(),
+      interval_ms,
+    )
+  ch
+}
+
+fn heartbeat_frames(f: fake.FakeSocket) -> Int {
+  fake.outbound(f)
+  |> list.filter(fn(frame) { event_of(frame) == "heartbeat" })
+  |> list.length
 }
 
 fn ref_of(frame: String) -> option.Option(String) {
