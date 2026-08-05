@@ -1,7 +1,11 @@
-//// Protocol-agnostic channel WebSocket client for Gleam, built on Gluegun.
+//// Protocol-agnostic channel WebSocket client for Gleam.
 ////
-//// This module is the public facade. It re-exports the common channel
-//// lifecycle functions from `aquamarine/channel`.
+//// This module is the public facade for the one-topic case: connect, push,
+//// receive, close. It re-exports `aquamarine/channel`.
+////
+//// For several topics on one connection, use `aquamarine/socket` and
+//// `aquamarine/channel` directly — open a socket once and `channel.join` as
+//// many topics as you need.
 
 import aquamarine/channel.{type Channel}
 import aquamarine/codec.{type Codec, type Incoming}
@@ -44,6 +48,11 @@ pub fn join_reply(channel: Channel) -> Incoming {
 /// Re-export of [`channel.receive`](aquamarine/channel.html#receive).
 pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
   channel.receive(channel)
+}
+
+/// Re-export of [`channel.leave`](aquamarine/channel.html#leave).
+pub fn leave(channel: Channel) -> Result(Nil, AquamarineError) {
+  channel.leave(channel)
 }
 
 /// Re-export of [`channel.close`](aquamarine/channel.html#close).
