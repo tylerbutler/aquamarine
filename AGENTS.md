@@ -20,19 +20,20 @@ CI currently runs on OTP 28 and Gleam 1.18.1, then executes `gleam deps download
 ## Architecture
 
 - `src/aquamarine.gleam` is intentionally a thin public facade that re-exports the channel lifecycle: `connect`, `push`, `receive`, and `close`.
-- `src/aquamarine/socket.gleam` is the socket actor. It owns the transport, receives every inbound frame in its own mailbox, decodes through the codec, and routes the result — either to a caller blocked on a specific ref, or to the subscriber subject. Errors travel in-band on that subject as `Result(Incoming, AquamarineError)`. Outbound sends are fire-and-forget; a failed send marks the socket gone rather than reporting synchronously.
-- `src/aquamarine/channel.gleam` owns the channel lifecycle on top of that actor. It starts the socket, starts the ref counter, sends the join frame and blocks on its correlated reply, starts heartbeats, sends pushes, and cleans up actors/socket on failures.
+- `src/aquamarine/socket.gleam` is the socket actor. It owns the transport, the ref counter, and the codec. Every inbound frame arrives in its mailbox, is decoded, and is routed — either to a caller blocked on a specific ref, or to the subscriber subject. Errors travel in-band on that subject as `Result(Incoming, AquamarineError)`. Outbound sends are fire-and-forget; a failed send marks the socket gone rather than reporting synchronously.
+- Refs are minted inside the actor, in the same message handler that sends the frame carrying them, so ref order and send order cannot diverge. Actor messages are semantic (`Join`, `Push`, `Heartbeat`), not pre-encoded strings — encoding needs a ref, and the ref lives here.
+- `src/aquamarine/channel.gleam` owns the channel lifecycle on top of that actor. It starts the socket, joins the topic and blocks on the correlated reply, starts the heartbeat, sends pushes, and cleans up on failures.
 - `src/aquamarine/codec.gleam` defines the protocol abstraction. `Codec` supplies decode/encode functions plus protocol event names, so channel logic is not Phoenix-specific.
 - `src/aquamarine/phoenix.gleam` adapts `roost/frame` to Aquamarine's `Codec` shape. Phoenix compatibility should generally be implemented here rather than inside `channel.gleam`.
-- `src/aquamarine/ref.gleam` and `src/aquamarine/heartbeat.gleam` are OTP actor helpers. Refs are monotonic strings produced by a counter actor; heartbeat periodically asks that counter for a ref, encodes a heartbeat frame through the configured codec, and calls a supplied send function.
+- `src/aquamarine/heartbeat.gleam` is a bare timer actor: it calls a supplied function on an interval and knows nothing about refs, codecs, or frames. The socket actor is what mints the ref and encodes the frame.
 - `src/aquamarine/error.gleam` is the public typed error surface. Public operations return `Result(_, AquamarineError)` and wrap Gluegun failures with `Transport`.
 
 ## Project conventions
 
 - The package targets Erlang (`target = "erlang"` in `gleam.toml`); avoid introducing JavaScript-target-only APIs.
 - Preserve the codec boundary: protocol-specific frame formats and event names belong in codec adapters, while channel lifecycle and WebSocket behavior belong in `aquamarine/channel`.
-- Keep `Channel`, `socket.Socket`, `socket.Message`, `ref.Counter`, `ref.Message`, `heartbeat.Heartbeat`, and `heartbeat.Message` opaque so callers cannot construct or depend on internal actor details.
-- `connect` must clean up partially started resources on every failure path. Existing helpers (`cleanup_connect`, `start_counter`, `next_join_ref`, `join`, `start_heartbeat`) encode that pattern.
+- Keep `Channel`, `socket.Socket`, `socket.Message`, `heartbeat.Heartbeat`, and `heartbeat.Message` opaque so callers cannot construct or depend on internal actor details.
+- `connect` must clean up partially started resources on every failure path. Existing helpers (`join`, `start_heartbeat`) encode that pattern.
 - Only the process that called `connect` should call `receive` — a subject can only be received from by the process that created it, and `connect` creates the events subject. `push` and `close` are safe from other processes because they are messages to the socket actor.
 - `receive` skips non-application frames, binary frames, and heartbeat replies; it turns protocol close/error events into `Error(ChannelClosed)`.
 - Tests use gleeunit. The suite entrypoint is `test/aquamarine_test.gleam`, and every test is a public zero-argument function whose name ends in `_test` inside a `*_test` module.
