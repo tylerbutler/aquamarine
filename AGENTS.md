@@ -19,9 +19,10 @@ CI currently runs on OTP 28 and Gleam 1.18.1, then executes `gleam deps download
 
 ## Architecture
 
-- `src/aquamarine.gleam` is intentionally a thin public facade that re-exports the channel lifecycle: `connect`, `push`, `receive`, and `close`.
+- `src/aquamarine.gleam` is intentionally a thin public facade that re-exports the channel lifecycle: `connect`, `push`, `push_and_await_reply`, `join_reply`, `receive`, and `close`.
 - `src/aquamarine/socket.gleam` is the socket actor. It owns the transport, the ref counter, and the codec. Every inbound frame arrives in its mailbox, is decoded, and is routed — either to a caller blocked on a specific ref, or to the subscriber subject. Errors travel in-band on that subject as `Result(Incoming, AquamarineError)`. Outbound sends are fire-and-forget; a failed send marks the socket gone rather than reporting synchronously.
 - Refs are minted inside the actor, in the same message handler that sends the frame carrying them, so ref order and send order cannot diverge. Actor messages are semantic (`Join`, `Push`, `Heartbeat`), not pre-encoded strings — encoding needs a ref, and the ref lives here.
+- Reply correlation is a `Dict(ref, Waiter)` in actor state. Matching goes through `codec.matches_reply`, never a direct `incoming.ref` comparison, so refless protocols keep working; a codec that can never match simply lets the caller's timeout take over. A caller that times out sends a cancel so the table cannot grow without bound, and losing the socket fails every waiter.
 - `src/aquamarine/channel.gleam` owns the channel lifecycle on top of that actor. It starts the socket, joins the topic and blocks on the correlated reply, sends pushes, and cleans up on failures.
 - `src/aquamarine/codec.gleam` defines the protocol abstraction. `Codec` supplies decode/encode functions plus protocol event names, so channel logic is not Phoenix-specific.
 - `src/aquamarine/phoenix.gleam` adapts `roost/frame` to Aquamarine's `Codec` shape. Phoenix compatibility should generally be implemented here rather than inside `channel.gleam`.

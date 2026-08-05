@@ -25,6 +25,22 @@ pub fn push(channel: Channel, event: String, payload: json.Json) -> Nil {
   channel.push(channel, event, payload)
 }
 
+/// Re-export of
+/// [`channel.push_and_await_reply`](aquamarine/channel.html#push_and_await_reply).
+pub fn push_and_await_reply(
+  channel: Channel,
+  event: String,
+  payload: json.Json,
+  timeout: Int,
+) -> Result(Incoming, AquamarineError) {
+  channel.push_and_await_reply(channel, event, payload, timeout)
+}
+
+/// Re-export of [`channel.join_reply`](aquamarine/channel.html#join_reply).
+pub fn join_reply(channel: Channel) -> Incoming {
+  channel.join_reply(channel)
+}
+
 /// Re-export of [`channel.receive`](aquamarine/channel.html#receive).
 pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
   channel.receive(channel)
