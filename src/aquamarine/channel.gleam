@@ -41,8 +41,8 @@ const receive_timeout_ms: Int = 5000
 
 /// Default wait for a join reply.
 ///
-/// Under the old transport this rode along on Gluegun's 5s frame timeout,
-/// which is not something to depend on. It is explicit now.
+/// The transport applies no per-frame deadline of its own, so this is the only
+/// thing standing between a silent server and a caller that waits forever.
 pub const default_join_timeout_ms: Int = 5000
 
 pub opaque type Channel {
@@ -70,6 +70,7 @@ pub opaque type Channel {
 /// Blocks until either a reply matching the join arrives, or a transport error
 /// / non-ok status is observed.
 pub fn connect(
+  scheme scheme: transport.Scheme,
   host host: String,
   port port: Int,
   path path: String,
@@ -78,7 +79,7 @@ pub fn connect(
   codec codec: Codec,
 ) -> Result(Channel, AquamarineError) {
   connect_with(
-    transport.gluegun_connector(host:, port:, path:),
+    transport.collie_connector(scheme:, host:, port:, path:),
     topic,
     payload,
     codec,

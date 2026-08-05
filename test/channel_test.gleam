@@ -164,9 +164,12 @@ pub fn connect_with_maps_a_closed_frame_during_handshake_to_channel_closed_test(
   fake.shutdown(f)
 }
 
-pub fn connect_with_propagates_a_send_side_error_on_the_join_frame_test() {
+/// Sending is fire-and-forget, so a join frame that cannot go out is not
+/// reported synchronously — it takes the connection down, and the join sees
+/// the connection close.
+pub fn connect_with_surfaces_a_failed_join_send_as_a_closed_channel_test() {
   let f = fake.start()
-  fake.enqueue_send_error(f, error.Transport(error.Timeout))
+  fake.fail_next_send(f)
 
   assert channel.connect_with(
       fake.connector_for(f),
@@ -175,7 +178,7 @@ pub fn connect_with_propagates_a_send_side_error_on_the_join_frame_test() {
       phoenix.codec(),
       no_heartbeat,
     )
-    == Error(error.Transport(error.Timeout))
+    == Error(error.ChannelClosed)
 
   assert fake.is_closed(f)
   fake.shutdown(f)
@@ -252,7 +255,7 @@ pub fn connect_with_skips_non_matching_frames_before_the_join_reply_test() {
 
 pub fn connect_with_propagates_a_connector_failure_verbatim_test() {
   let connector =
-    fake.failing_connector(error.Transport(error.ConnectionError("nope")))
+    fake.failing_connector(error.Transport(error.ConnectFailed("nope")))
 
   assert channel.connect_with(
       connector,
@@ -261,7 +264,7 @@ pub fn connect_with_propagates_a_connector_failure_verbatim_test() {
       phoenix.codec(),
       no_heartbeat,
     )
-    == Error(error.Transport(error.ConnectionError("nope")))
+    == Error(error.Transport(error.ConnectFailed("nope")))
 }
 
 // -- channel.push -----------------------------------------------------------
@@ -293,14 +296,14 @@ pub fn push_surfaces_a_transport_send_failure_on_the_next_receive_test() {
   let f = fake.start()
   let ch = connect_with_fake(f)
 
-  fake.enqueue_send_error(f, error.Transport(error.ConnectionDown("gone")))
+  fake.fail_next_send(f)
 
   // `push` cannot report the failure itself — it is fire-and-forget. A send
-  // that fails takes the socket down, and that is what the caller observes.
+  // that fails takes the connection down, and that is what the caller
+  // observes.
   channel.push(ch, "say", empty_payload())
 
-  assert channel.receive(ch)
-    == Error(error.Transport(error.ConnectionDown("gone")))
+  assert channel.receive(ch) == Error(error.ChannelClosed)
 
   let assert Ok(Nil) = channel.close(ch)
   fake.shutdown(f)
@@ -866,11 +869,11 @@ pub fn close_propagates_a_transport_close_error_test() {
 
   fake.enqueue_close_error(
     f,
-    error.Transport(error.ConnectionError("close failed")),
+    error.Transport(error.SocketError("close failed")),
   )
 
   assert channel.close(ch)
-    == Error(error.Transport(error.ConnectionError("close failed")))
+    == Error(error.Transport(error.SocketError("close failed")))
 
   // Give the heartbeat/counter actors a tick to fully exit before the
   // fake socket is shut down.

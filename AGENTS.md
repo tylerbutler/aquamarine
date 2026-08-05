@@ -31,7 +31,8 @@ CI currently runs on OTP 28 and Gleam 1.18.1, then executes `gleam deps download
 - `src/aquamarine/codec.gleam` defines the protocol abstraction. `Codec` supplies decode/encode functions plus protocol event names, so channel logic is not Phoenix-specific.
 - `src/aquamarine/phoenix.gleam` adapts `roost/frame` to Aquamarine's `Codec` shape. Phoenix compatibility should generally be implemented here rather than inside `channel.gleam`.
 - The heartbeat is a timed self-message inside the socket actor (`process.send_after(self, interval, Heartbeat)`), not a separate process. The actor cancels the pending tick when it stops, so no heartbeat frame outlives a close.
-- `src/aquamarine/error.gleam` is the public typed error surface. Public operations return `Result(_, AquamarineError)` and wrap Gluegun failures with `Transport`.
+- `src/aquamarine/error.gleam` is the public typed error surface. Public operations return `Result(_, AquamarineError)`; transport failures are wrapped with `Transport` and classified into a handful of variants a caller can branch on, keeping the transport's own name as a string for the rest.
+- `src/aquamarine/transport.gleam` is the internal seam over Collie. Outbound `send_text` is fire-and-forget and returns `Nil` — a send that fails takes the connection down and arrives on the sink as `Closed`. `close` does return a `Result`, because it happens once and the caller has somewhere to put the answer. Collie's `Connection` handle only exists inside its own handler, so everything outbound goes in as a user message.
 
 ## Project conventions
 

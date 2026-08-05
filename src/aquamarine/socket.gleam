@@ -187,13 +187,14 @@ type State {
 /// frame to read its topic before it can route, so one socket serves one wire
 /// protocol — matching Phoenix's one-serializer-per-socket model.
 pub fn connect(
+  scheme scheme: transport.Scheme,
   host host: String,
   port port: Int,
   path path: String,
   codec codec: Codec,
 ) -> Result(Socket, AquamarineError) {
   start(
-    transport.gluegun_connector(host:, port:, path:),
+    transport.collie_connector(scheme:, host:, port:, path:),
     codec,
     default_heartbeat_ms,
   )
@@ -353,6 +354,7 @@ pub fn owner(socket: Socket) -> Result(process.Pid, Nil) {
 /// The restarted socket has **no joined channels**, and `Channel` handles from
 /// before the restart are stale. See the module documentation.
 pub fn supervised(
+  scheme scheme: transport.Scheme,
   host host: String,
   port port: Int,
   path path: String,
@@ -360,7 +362,7 @@ pub fn supervised(
   name name: Name,
 ) -> supervision.ChildSpecification(Socket) {
   supervised_with(
-    transport.gluegun_connector(host:, port:, path:),
+    transport.collie_connector(scheme:, host:, port:, path:),
     codec,
     default_heartbeat_ms,
     name,
@@ -498,12 +500,9 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
         True -> actor.continue(state)
         False -> {
           let #(ref, state) = mint_ref(state)
-          let text =
-            state.codec.encode_push(join_ref, ref, topic, event, payload)
-          case state.transport.send_text(text) {
-            Ok(Nil) -> actor.continue(state)
-            Error(err) -> actor.continue(lose_socket(state, err))
-          }
+          state.codec.encode_push(join_ref, ref, topic, event, payload)
+          |> state.transport.send_text
+          actor.continue(state)
         }
       }
 
@@ -527,7 +526,6 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
             join_ref,
             text,
             JoinWaiter(topic, events, reply_to),
-            fn(err) { process.send(reply_to, Error(err)) },
           )
         }
       }
@@ -543,24 +541,16 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
         }
         False -> {
           let #(ref, state) = mint_ref(state)
-          let text =
-            state.codec.encode_push(
-              join_ref,
-              ref,
-              topic,
-              state.codec.leave_event,
-              json.object([]),
-            )
-          case state.transport.send_text(text) {
-            Ok(Nil) -> {
-              process.send(reply_to, Ok(Nil))
-              actor.continue(state)
-            }
-            Error(err) -> {
-              process.send(reply_to, Error(err))
-              actor.continue(lose_socket(state, err))
-            }
-          }
+          state.codec.encode_push(
+            join_ref,
+            ref,
+            topic,
+            state.codec.leave_event,
+            json.object([]),
+          )
+          |> state.transport.send_text
+          process.send(reply_to, Ok(Nil))
+          actor.continue(state)
         }
       }
     }
@@ -575,9 +565,7 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
           let #(ref, state) = mint_ref(state)
           let text =
             state.codec.encode_push(join_ref, ref, topic, event, payload)
-          send_awaiting(state, ref, text, ReplyWaiter(reply_to), fn(err) {
-            process.send(reply_to, Error(err))
-          })
+          send_awaiting(state, ref, text, ReplyWaiter(reply_to))
         }
       }
 
@@ -619,10 +607,9 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
                 Heartbeat,
               )),
             )
-          case state.transport.send_text(state.codec.encode_heartbeat(ref)) {
-            Ok(Nil) -> actor.continue(state)
-            Error(err) -> actor.continue(lose_socket(state, err))
-          }
+          state.codec.encode_heartbeat(ref)
+          |> state.transport.send_text
+          actor.continue(state)
         }
       }
 
@@ -696,23 +683,10 @@ fn send_awaiting(
   ref: String,
   text: String,
   waiter: Waiter,
-  on_error: fn(AquamarineError) -> Nil,
 ) -> actor.Next(State, Message) {
   let state = State(..state, pending: dict.insert(state.pending, ref, waiter))
-  case state.transport.send_text(text) {
-    Ok(Nil) -> actor.continue(state)
-    Error(err) -> {
-      let state = State(..state, pending: dict.delete(state.pending, ref))
-      // A join that never left withdraws its provisional route.
-      let state = case waiter {
-        JoinWaiter(topic, _, _) ->
-          State(..state, routes: dict.delete(state.routes, topic))
-        ReplyWaiter(_) -> state
-      }
-      on_error(err)
-      actor.continue(lose_socket(state, err))
-    }
-  }
+  state.transport.send_text(text)
+  actor.continue(state)
 }
 
 /// Decide where a decoded frame goes: to whoever is waiting on its ref, or to
