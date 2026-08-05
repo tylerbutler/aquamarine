@@ -5,6 +5,7 @@
 //// around joining. Single-topic channel behavior lives in `channel_test`.
 
 import aquamarine/channel
+import aquamarine/codec
 import aquamarine/error
 import aquamarine/phoenix
 import aquamarine/socket
@@ -34,17 +35,17 @@ pub fn two_channels_on_one_socket_each_receive_only_their_own_frames_test() {
   fake.enqueue_text(f, server_push(topic_a, "for_a"))
   fake.enqueue_text(f, server_push(topic_b, "for_b"))
 
-  let assert Ok(to_a) = channel.receive(a)
+  let assert Ok(to_a) = channel.receive(a, 500)
   assert to_a.event == "for_a"
   assert to_a.topic == topic_a
 
-  let assert Ok(to_b) = channel.receive(b)
+  let assert Ok(to_b) = channel.receive(b, 500)
   assert to_b.event == "for_b"
   assert to_b.topic == topic_b
 
   // Neither channel saw the other's frame — both mailboxes are now empty.
-  assert channel.receive(a) == Error(error.Transport(error.Timeout))
-  assert channel.receive(b) == Error(error.Transport(error.Timeout))
+  assert channel.receive(a, 500) == Error(error.Transport(error.Timeout))
+  assert channel.receive(b, 500) == Error(error.Transport(error.Timeout))
 
   let assert Ok(Nil) = socket.close(sock)
   fake.shutdown(f)
@@ -60,7 +61,7 @@ pub fn frames_for_an_unknown_topic_do_not_crash_the_socket_test() {
   fake.enqueue_text(f, server_push("test:nobody_joined_this", "ignored"))
   fake.enqueue_text(f, server_push(topic_a, "still_working"))
 
-  let assert Ok(incoming) = channel.receive(a)
+  let assert Ok(incoming) = channel.receive(a, 500)
   assert incoming.event == "still_working"
 
   let assert Ok(Nil) = socket.close(sock)
@@ -77,11 +78,11 @@ pub fn a_close_event_on_one_topic_leaves_the_other_channel_alive_test() {
   let b = join_ok(f, sock, topic_b, "2")
 
   fake.enqueue_text(f, server_push(topic_a, phoenix.codec().close_event))
-  assert channel.receive(a) == Error(error.ChannelClosed)
+  assert channel.receive(a, 500) == Error(error.ChannelClosed)
 
   // The socket and channel B are unaffected.
   fake.enqueue_text(f, server_push(topic_b, "b_survives"))
-  let assert Ok(incoming) = channel.receive(b)
+  let assert Ok(incoming) = channel.receive(b, 500)
   assert incoming.event == "b_survives"
 
   let assert Ok(Nil) = socket.close(sock)
@@ -95,10 +96,10 @@ pub fn an_error_event_on_one_topic_leaves_the_other_channel_alive_test() {
   let b = join_ok(f, sock, topic_b, "2")
 
   fake.enqueue_text(f, server_push(topic_a, phoenix.codec().error_event))
-  assert channel.receive(a) == Error(error.ChannelClosed)
+  assert channel.receive(a, 500) == Error(error.ChannelClosed)
 
   fake.enqueue_text(f, server_push(topic_b, "b_survives"))
-  let assert Ok(incoming) = channel.receive(b)
+  let assert Ok(incoming) = channel.receive(b, 500)
   assert incoming.event == "b_survives"
 
   let assert Ok(Nil) = socket.close(sock)
@@ -129,7 +130,7 @@ pub fn joining_again_after_leaving_succeeds_test() {
   // Ref "2" was the leave frame, so the second join goes out under "3".
   let rejoined = join_ok(f, sock, topic_a, "3")
   fake.enqueue_text(f, server_push(topic_a, "after_rejoin"))
-  let assert Ok(incoming) = channel.receive(rejoined)
+  let assert Ok(incoming) = channel.receive(rejoined, 500)
   assert incoming.event == "after_rejoin"
 
   let assert Ok(Nil) = socket.close(sock)
@@ -169,9 +170,9 @@ pub fn leave_stops_routing_but_leaves_the_socket_usable_test() {
   // A's frames are dropped now; B is untouched.
   fake.enqueue_text(f, server_push(topic_a, "too_late"))
   fake.enqueue_text(f, server_push(topic_b, "still_here"))
-  let assert Ok(incoming) = channel.receive(b)
+  let assert Ok(incoming) = channel.receive(b, 500)
   assert incoming.event == "still_here"
-  assert channel.receive(a) == Error(error.Transport(error.Timeout))
+  assert channel.receive(a, 500) == Error(error.Transport(error.Timeout))
 
   let assert Ok(Nil) = socket.close(sock)
   fake.shutdown(f)
@@ -190,7 +191,7 @@ pub fn the_last_channel_leaving_does_not_close_the_socket_test() {
   // Still usable: a fresh topic joins fine. Refs 1=join, 2=leave, 3=join.
   let b = join_ok(f, sock, topic_b, "3")
   fake.enqueue_text(f, server_push(topic_b, "socket_alive"))
-  let assert Ok(incoming) = channel.receive(b)
+  let assert Ok(incoming) = channel.receive(b, 500)
   assert incoming.event == "socket_alive"
 
   let assert Ok(Nil) = socket.close(sock)
@@ -207,11 +208,9 @@ pub fn close_on_a_connect_owned_channel_closes_the_socket_test() {
   fake.enqueue_text(f, ok_reply(topic_a, "1"))
   let assert Ok(ch) =
     channel.connect_with(
-      fake.connector_for(f),
+      test_config(f, phoenix.codec(), no_heartbeat),
       topic_a,
       empty(),
-      phoenix.codec(),
-      no_heartbeat,
     )
 
   let assert Ok(Nil) = channel.close(ch)
@@ -224,11 +223,9 @@ pub fn leave_on_a_connect_owned_channel_does_not_close_the_socket_test() {
   fake.enqueue_text(f, ok_reply(topic_a, "1"))
   let assert Ok(ch) =
     channel.connect_with(
-      fake.connector_for(f),
+      test_config(f, phoenix.codec(), no_heartbeat),
       topic_a,
       empty(),
-      phoenix.codec(),
-      no_heartbeat,
     )
 
   let assert Ok(Nil) = channel.leave(ch)
@@ -304,7 +301,7 @@ pub fn heartbeat_replies_fall_out_as_unknown_topic_drops_test() {
   )
   fake.enqueue_text(f, server_push(topic_a, "real"))
 
-  let assert Ok(incoming) = channel.receive(a)
+  let assert Ok(incoming) = channel.receive(a, 500)
   assert incoming.event == "real"
 
   let assert Ok(Nil) = socket.close(sock)
@@ -321,23 +318,28 @@ pub fn closing_the_socket_terminates_every_channel_test() {
 
   let assert Ok(Nil) = socket.close(sock)
 
-  assert channel.receive(a) == Error(error.ChannelClosed)
-  assert channel.receive(b) == Error(error.ChannelClosed)
+  assert channel.receive(a, 500) == Error(error.ChannelClosed)
+  assert channel.receive(b, 500) == Error(error.ChannelClosed)
 
   fake.shutdown(f)
 }
 
-pub fn losing_the_socket_terminates_every_channel_test() {
+/// Losing the connection no longer terminates channels — it starts a
+/// reconnect. The channels are told nothing, because nothing happened to their
+/// topics; see `reconnect_test` for what does happen.
+pub fn losing_the_connection_does_not_terminate_channels_test() {
   let f = fake.start()
   let sock = start_socket(f, no_heartbeat)
   let a = join_ok(f, sock, topic_a, "1")
-  let b = join_ok(f, sock, topic_b, "2")
+  let status = process.new_subject()
+  socket.watch(sock, status)
 
   fake.enqueue_closed(f)
 
-  assert channel.receive(a) == Error(error.ChannelClosed)
-  assert channel.receive(b) == Error(error.ChannelClosed)
+  let assert Ok(socket.Disconnected(_)) = process.receive(status, 500)
+  assert channel.receive(a, 500) == Error(error.Transport(error.Timeout))
 
+  let _ = socket.close(sock)
   fake.shutdown(f)
 }
 
@@ -349,7 +351,7 @@ fn empty() -> json.Json {
 
 fn start_socket(f: fake.FakeSocket, heartbeat_ms: Int) -> socket.Socket {
   let assert Ok(sock) =
-    socket.start(fake.connector_for(f), phoenix.codec(), heartbeat_ms)
+    socket.start(test_config(f, phoenix.codec(), heartbeat_ms))
   sock
 }
 
@@ -402,4 +404,14 @@ fn heartbeat_frames(f: fake.FakeSocket) -> Int {
     }
   })
   |> list.length
+}
+
+/// A socket configuration around a fake transport, with a chosen heartbeat.
+fn test_config(
+  f: fake.FakeSocket,
+  codec: codec.Codec,
+  heartbeat_ms: Int,
+) -> socket.Config {
+  socket.test_config(fake.connector_for(f), codec)
+  |> socket.with_heartbeat_ms(heartbeat_ms)
 }

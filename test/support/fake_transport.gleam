@@ -32,7 +32,12 @@ pub opaque type FakeSocket {
 
 pub opaque type Message {
   Deliver(Frame)
-  SetSink(Subject(Frame))
+  Connecting(
+    sink: Subject(Frame),
+    reply_to: Subject(Result(Nil, AquamarineError)),
+  )
+  ScriptConnectFailures(Int)
+  ConnectCount(reply_to: Subject(Int))
   ScriptSendFailure
   ScriptCloseError(AquamarineError)
   DoSend(text: String)
@@ -48,6 +53,8 @@ type State {
     pending: List(Frame),
     released: Bool,
     send_failures: Int,
+    connect_failures: Int,
+    connects: Int,
     close_errors: List(AquamarineError),
     outbound: List(String),
     closed: Bool,
@@ -61,6 +68,8 @@ pub fn start() -> FakeSocket {
       pending: [],
       released: False,
       send_failures: 0,
+      connect_failures: 0,
+      connects: 0,
       close_errors: [],
       outbound: [],
       closed: False,
@@ -134,9 +143,28 @@ pub fn transport(fake: FakeSocket) -> Transport {
 
 pub fn connector_for(fake: FakeSocket) -> transport.Connector {
   fn(sink) {
-    process.send(fake.subject, SetSink(sink))
-    Ok(transport(fake))
+    // Deliberately not `process.call`: a socket that outlives its fake will
+    // try to reconnect, and a real connector reports a dead endpoint as an
+    // error rather than crashing its caller.
+    let reply_to = process.new_subject()
+    process.send(fake.subject, Connecting(sink, reply_to))
+    case process.receive(reply_to, 1000) {
+      Ok(Ok(Nil)) -> Ok(transport(fake))
+      Ok(Error(err)) -> Error(err)
+      Error(Nil) -> Error(error.Transport(error.ConnectFailed("fake is gone")))
+    }
   }
+}
+
+/// Make the next `n` connect attempts fail, so a reconnect has to retry.
+pub fn fail_next_connects(fake: FakeSocket, n: Int) -> Nil {
+  process.send(fake.subject, ScriptConnectFailures(n))
+}
+
+/// How many times the connector has been called. One per connection, so
+/// reconnects are countable.
+pub fn connect_count(fake: FakeSocket) -> Int {
+  process.call(fake.subject, 1000, ConnectCount)
 }
 
 pub fn failing_connector(err: AquamarineError) -> transport.Connector {
@@ -145,7 +173,13 @@ pub fn failing_connector(err: AquamarineError) -> transport.Connector {
 
 fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
   case msg {
-    Deliver(frame) ->
+    Deliver(frame) -> {
+      // Delivering `Closed` means the connection really is gone, however it
+      // got that way.
+      let state = case frame {
+        transport.Closed -> State(..state, closed: True)
+        _ -> state
+      }
       case state.sink, state.released {
         Some(sink), True -> {
           process.send(sink, frame)
@@ -157,8 +191,41 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
             State(..state, pending: list.append(state.pending, [frame])),
           )
       }
+    }
 
-    SetSink(sink) -> actor.continue(flush(State(..state, sink: Some(sink))))
+    Connecting(sink, reply_to) ->
+      case state.connect_failures {
+        0 -> {
+          process.send(reply_to, Ok(Nil))
+          // `closed` is sticky: it records that a close was observed at some
+          // point, which is what cleanup assertions are about. Reconnects are
+          // counted by `connects`.
+          actor.continue(flush(
+            State(..state, sink: Some(sink), connects: state.connects + 1),
+          ))
+        }
+        n -> {
+          process.send(
+            reply_to,
+            Error(error.Transport(error.ConnectFailed("scripted"))),
+          )
+          actor.continue(
+            State(
+              ..state,
+              connect_failures: n - 1,
+              connects: state.connects + 1,
+            ),
+          )
+        }
+      }
+
+    ScriptConnectFailures(n) ->
+      actor.continue(State(..state, connect_failures: n))
+
+    ConnectCount(reply_to) -> {
+      process.send(reply_to, state.connects)
+      actor.continue(state)
+    }
 
     ScriptSendFailure ->
       actor.continue(State(..state, send_failures: state.send_failures + 1))

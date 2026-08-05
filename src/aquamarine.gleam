@@ -48,8 +48,11 @@ pub fn join_reply(channel: Channel) -> Incoming {
 }
 
 /// Re-export of [`channel.receive`](aquamarine/channel.html#receive).
-pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
-  channel.receive(channel)
+pub fn receive(
+  channel: Channel,
+  timeout: Int,
+) -> Result(Incoming, AquamarineError) {
+  channel.receive(channel, timeout)
 }
 
 /// Re-export of [`channel.leave`](aquamarine/channel.html#leave).

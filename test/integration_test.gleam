@@ -4,6 +4,7 @@
 //// client push -> server reply round-trip and a join rejection.
 
 import aquamarine
+import aquamarine/backoff
 import aquamarine/channel
 import aquamarine/error
 import aquamarine/phoenix
@@ -28,9 +29,10 @@ import mist
 
 const test_path: String = "/socket/websocket"
 
-/// A running beryl instance plus the port its mist listener bound to.
+/// A running beryl instance plus the port its mist listener bound to, and the
+/// listener's own supervisor so a test can take the server away.
 type TestServer {
-  TestServer(channels: beryl.Channels, port: Int)
+  TestServer(channels: beryl.Channels, port: Int, listener: process.Pid)
 }
 
 pub fn joins_a_channel_and_receives_a_server_push_test() {
@@ -57,7 +59,7 @@ pub fn joins_a_channel_and_receives_a_server_push_test() {
     json.object([#("n", json.int(42))]),
   )
 
-  let assert Ok(incoming) = channel.receive(ch)
+  let assert Ok(incoming) = channel.receive(ch, 500)
   assert incoming.event == "tick"
   assert incoming.topic == "test:lobby"
   assert decode_n(incoming.payload) == Ok(42)
@@ -81,7 +83,7 @@ pub fn round_trips_a_client_push_through_the_public_facade_test() {
 
   aquamarine.push(ch, "say", json.object([#("body", json.string("hello"))]))
 
-  let assert Ok(incoming) = aquamarine.receive(ch)
+  let assert Ok(incoming) = aquamarine.receive(ch, 5000)
   assert incoming.event == phoenix.codec().reply_event
   assert incoming.topic == "test:echo"
   assert decode_body(incoming.payload) == Ok("hello")
@@ -166,7 +168,7 @@ pub fn serves_two_topics_over_one_socket_test() {
     json.object([#("n", json.int(7))]),
   )
 
-  let assert Ok(incoming) = channel.receive(lobby)
+  let assert Ok(incoming) = channel.receive(lobby, 500)
   assert incoming.topic == "test:lobby"
   assert incoming.event == "tick"
 
@@ -251,6 +253,67 @@ pub fn round_trips_a_payload_larger_than_one_read_test() {
   let assert Ok(Nil) = aquamarine.close(ch)
 }
 
+/// The payoff for the whole epic, against a real server: kill it mid-session,
+/// put a fresh one back on the same port, and the client finds its way home
+/// with its channel handle still valid.
+pub fn reconnects_and_rejoins_after_the_server_goes_away_test() {
+  let server = start_server()
+  let port = server.port
+
+  let assert Ok(sock) =
+    socket.start(
+      socket.config(
+        scheme: transport.Ws,
+        host: "127.0.0.1",
+        port: port,
+        path: test_path,
+        codec: phoenix.codec(),
+      )
+      // Fast enough to watch, still a real schedule.
+      |> socket.with_backoff(
+        backoff.default()
+        |> backoff.with_initial_ms(50)
+        |> backoff.with_max_ms(200),
+      ),
+    )
+  let status = process.new_subject()
+  socket.watch(sock, status)
+
+  let assert Ok(lobby) = channel.join(sock, "test:lobby", json.object([]), 5000)
+
+  stop_server(server)
+  let assert Ok(socket.Disconnected(_)) = process.receive(status, 5000)
+
+  // A fresh server takes the old one's place.
+  let replacement = start_server_on(port)
+  let assert Ok(socket.Rejoined("test:lobby")) = await_rejoin(status, 15_000)
+
+  // The `Channel` from before the drop still works — same actor, same subject.
+  process.sleep(100)
+  beryl.broadcast(
+    replacement.channels,
+    "test:lobby",
+    "tick",
+    json.object([#("n", json.int(1))]),
+  )
+  let assert Ok(incoming) = channel.receive(lobby, 5000)
+  assert incoming.event == "tick"
+  assert incoming.topic == "test:lobby"
+
+  let assert Ok(Nil) = socket.close(sock)
+}
+
+fn await_rejoin(
+  status: process.Subject(socket.Status),
+  timeout: Int,
+) -> Result(socket.Status, Nil) {
+  case process.receive(status, timeout) {
+    Ok(socket.Rejoined(topic)) -> Ok(socket.Rejoined(topic))
+    Ok(_) -> await_rejoin(status, timeout)
+    Error(Nil) -> Error(Nil)
+  }
+}
+
 pub fn surfaces_a_server_side_join_rejection_test() {
   let server = start_server()
 
@@ -269,9 +332,22 @@ pub fn surfaces_a_server_side_join_rejection_test() {
 /// Stand up a beryl instance with the test channels registered and a mist
 /// listener bound to an ephemeral port.
 fn start_server() -> TestServer {
+  start_server_on(0)
+}
+
+/// Same, on a specific port — so a test can put a fresh server back where the
+/// old one was and watch a client find its way home.
+fn start_server_on(port: Int) -> TestServer {
   let assert Ok(channels) = start_supervised(beryl.config(wire.phoenix_codec()))
   register_channels(channels)
-  TestServer(channels, start_mist(channels))
+  let #(bound, listener) = start_mist(channels, port)
+  TestServer(channels, bound, listener)
+}
+
+/// Take the listener down hard, taking every live connection with it.
+fn stop_server(server: TestServer) -> Nil {
+  process.unlink(server.listener)
+  process.kill(server.listener)
 }
 
 /// Start a supervised channel system for tests.
@@ -329,7 +405,7 @@ fn register_channels(channels: beryl.Channels) -> Nil {
 }
 
 /// Start a mist listener on an ephemeral port and return the bound port.
-fn start_mist(channels: beryl.Channels) -> Int {
+fn start_mist(channels: beryl.Channels, port: Int) -> #(Int, process.Pid) {
   let port_subject = process.new_subject()
 
   let handler = fn(req) {
@@ -344,17 +420,17 @@ fn start_mist(channels: beryl.Channels) -> Int {
     )
   }
 
-  let assert Ok(_server) =
+  let assert Ok(server) =
     mist.new(handler)
-    |> mist.port(0)
+    |> mist.port(port)
     |> mist.bind("127.0.0.1")
     |> mist.after_start(fn(port, _scheme, _ip_address) {
       process.send(port_subject, port)
     })
     |> mist.start
 
-  let assert Ok(port) = process.receive(port_subject, 1000)
-  port
+  let assert Ok(bound) = process.receive(port_subject, 1000)
+  #(bound, server.pid)
 }
 
 fn decode_n(payload) -> Result(Int, Nil) {

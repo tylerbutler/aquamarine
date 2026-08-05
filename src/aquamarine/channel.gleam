@@ -30,14 +30,10 @@
 import aquamarine/codec.{type Codec, type Incoming}
 import aquamarine/error.{type AquamarineError}
 import aquamarine/socket.{type Socket}
-import aquamarine/transport.{type Connector}
+import aquamarine/transport
 import gleam/erlang/process.{type Subject}
 import gleam/json
 import gleam/result
-
-/// How long [`receive`](#receive) waits for the next inbound event before
-/// reporting a transport timeout.
-const receive_timeout_ms: Int = 5000
 
 /// Default wait for a join reply.
 ///
@@ -50,7 +46,6 @@ pub opaque type Channel {
     socket: Socket,
     events: Subject(socket.Event),
     topic: String,
-    join_ref: String,
     join_reply: Incoming,
     /// True only for a channel from [`connect`](#connect), which opened the
     /// connection on the caller's behalf and is therefore the only thing that
@@ -79,27 +74,22 @@ pub fn connect(
   codec codec: Codec,
 ) -> Result(Channel, AquamarineError) {
   connect_with(
-    transport.collie_connector(scheme:, host:, port:, path:),
+    socket.config(scheme:, host:, port:, path:, codec:),
     topic,
     payload,
-    codec,
-    socket.default_heartbeat_ms,
   )
 }
 
-/// Like [`connect`](#connect) but takes a `Connector` and an explicit
-/// heartbeat interval, so tests can plug in an in-memory transport and a short
-/// heartbeat. The channel it returns owns its socket, exactly as `connect`'s
+/// Like [`connect`](#connect) but takes an explicit socket configuration, for
+/// a caller that wants one topic but not the default heartbeat or reconnect
+/// schedule. The channel it returns owns its socket, exactly as `connect`'s
 /// does.
-@internal
 pub fn connect_with(
-  connector: Connector,
+  config: socket.Config,
   topic: String,
   payload: json.Json,
-  codec: Codec,
-  heartbeat_ms: Int,
 ) -> Result(Channel, AquamarineError) {
-  use sock <- result.try(socket.start(connector, codec, heartbeat_ms))
+  use sock <- result.try(socket.start(config))
 
   case do_join(sock, topic, payload, default_join_timeout_ms, True) {
     Ok(channel) -> Ok(channel)
@@ -135,7 +125,7 @@ pub fn join(
 /// failure — a send that fails takes the socket down, which surfaces on the
 /// next [`receive`](#receive).
 pub fn push(channel: Channel, event: String, payload: json.Json) -> Nil {
-  socket.push(channel.socket, channel.join_ref, channel.topic, event, payload)
+  socket.push(channel.socket, channel.topic, event, payload)
 }
 
 /// Push an event and block until the server's reply to it arrives.
@@ -155,7 +145,6 @@ pub fn push_and_await_reply(
 ) -> Result(Incoming, AquamarineError) {
   socket.push_and_await_reply(
     channel.socket,
-    channel.join_ref,
     channel.topic,
     event,
     payload,
@@ -168,9 +157,19 @@ pub fn push_and_await_reply(
 /// Only this topic's frames arrive here. Heartbeat replies never do, so the
 /// caller sees real channel activity and nothing else. Returns
 /// `Error(ChannelClosed)` if the server sent a close/error event for this
-/// topic, or the socket itself closed.
-pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
-  case process.receive(channel.events, receive_timeout_ms) {
+/// topic, or the socket was closed, and `Error(Transport(Timeout))` if nothing
+/// arrives within `timeout`.
+///
+/// A quiet channel and a reconnecting socket look the same from here: both
+/// time out. That is deliberate — a reconnect is meant to be invisible to a
+/// topic that is otherwise fine. Use
+/// [`socket.watch`](aquamarine/socket.html#watch) if you need to tell them
+/// apart.
+pub fn receive(
+  channel: Channel,
+  timeout: Int,
+) -> Result(Incoming, AquamarineError) {
+  case process.receive(channel.events, timeout) {
     Ok(event) -> event
     Error(Nil) -> Error(error.Transport(error.Timeout))
   }
@@ -181,7 +180,7 @@ pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
 ///
 /// Re-joining the same topic afterwards is fine.
 pub fn leave(channel: Channel) -> Result(Nil, AquamarineError) {
-  socket.leave(channel.socket, channel.topic, channel.join_ref)
+  socket.leave(channel.socket, channel.topic)
 }
 
 /// Leave the topic, and close the connection if this channel owns it.
@@ -239,7 +238,6 @@ fn do_join(
     socket: sock,
     events: events,
     topic: topic,
-    join_ref: joined.join_ref,
     join_reply: joined.reply,
     owns_socket: owns_socket,
   )
