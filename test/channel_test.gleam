@@ -304,6 +304,72 @@ pub fn push_surfaces_a_transport_send_failure_on_the_next_receive_test() {
   fake.shutdown(f)
 }
 
+// -- refs -------------------------------------------------------------------
+
+/// Refs are minted inside the socket actor, in the same message handler that
+/// sends the frame carrying them. That is what makes this assertion possible:
+/// under the old design a ref was obtained and the frame sent in two steps
+/// from two different processes, so ref order and send order could diverge.
+pub fn refs_are_monotonic_unique_and_assigned_in_send_order_test() {
+  let f = fake.start()
+  let ch = connect_with_fake(f)
+
+  channel.push(ch, "one", empty_payload())
+  channel.push(ch, "two", empty_payload())
+  channel.push(ch, "three", empty_payload())
+  process.sleep(20)
+
+  let assert [join_frame, first, second, third] = fake.outbound(f)
+
+  assert ref_of(join_frame) == Some("1")
+  assert ref_of(first) == Some("2")
+  assert ref_of(second) == Some("3")
+  assert ref_of(third) == Some("4")
+
+  // Order of refs matches order of events, not just order of allocation.
+  assert event_of(first) == "one"
+  assert event_of(second) == "two"
+  assert event_of(third) == "three"
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+/// Heartbeats draw on the same counter as pushes — there is only one.
+pub fn heartbeat_frames_share_the_sockets_ref_sequence_test() {
+  let f = fake.start()
+  fake.enqueue_text(f, ok_join_reply("1"))
+  let assert Ok(ch) =
+    channel.connect_with(
+      fake.connector_for(f),
+      test_topic,
+      empty_payload(),
+      phoenix.codec(),
+      20,
+    )
+
+  channel.push(ch, "one", empty_payload())
+  process.sleep(60)
+
+  let assert [_join, push_frame, heartbeat_frame, ..] = fake.outbound(f)
+  assert ref_of(push_frame) == Some("2")
+  assert event_of(heartbeat_frame) == "heartbeat"
+  assert ref_of(heartbeat_frame) == Some("3")
+
+  let assert Ok(Nil) = channel.close(ch)
+  fake.shutdown(f)
+}
+
+fn ref_of(frame: String) -> option.Option(String) {
+  let assert Ok(decoded) = phoenix.codec().decode(frame)
+  decoded.ref
+}
+
+fn event_of(frame: String) -> String {
+  let assert Ok(decoded) = phoenix.codec().decode(frame)
+  decoded.event
+}
+
 // -- channel.receive --------------------------------------------------------
 
 pub fn receive_returns_the_next_application_frame_test() {

@@ -27,6 +27,8 @@ import aquamarine/codec.{type Codec, type Incoming}
 import aquamarine/error.{type AquamarineError}
 import aquamarine/transport.{type Connector, type Transport}
 import gleam/erlang/process.{type Subject}
+import gleam/int
+import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 
@@ -52,21 +54,34 @@ pub opaque type Socket {
   Socket(subject: Subject(Message))
 }
 
+/// A successful join: the ref the join was sent under, and the reply the
+/// server accepted it with.
+@internal
+pub type Joined {
+  Joined(join_ref: String, reply: Incoming)
+}
+
 @internal
 pub opaque type Message {
   /// An inbound frame, pushed here by the transport.
   Inbound(transport.Frame)
-  /// Fire-and-forget outbound text.
-  Send(text: String)
-  /// Outbound text whose reply, matched by `ref`, goes to `reply_to` instead
-  /// of to the subscriber.
-  SendAwaitingReply(ref: String, text: String, reply_to: Subject(Event))
+  /// Join a topic. The actor mints the join ref, encodes the frame, sends it,
+  /// and routes the matching reply to `reply_to`.
+  Join(
+    topic: String,
+    payload: json.Json,
+    reply_to: Subject(Result(Joined, AquamarineError)),
+  )
+  /// Fire-and-forget push. The actor mints the ref.
+  Push(join_ref: String, topic: String, event: String, payload: json.Json)
+  /// Emit one heartbeat frame. The actor mints the ref.
+  Heartbeat
   Close(reply_to: Subject(Result(Nil, AquamarineError)))
 }
 
 /// A caller blocked on the reply to a specific outbound ref.
 type Waiter {
-  Waiter(ref: String, reply_to: Subject(Event))
+  Waiter(ref: String, reply_to: Subject(Result(Joined, AquamarineError)))
 }
 
 type State {
@@ -75,6 +90,10 @@ type State {
     codec: Codec,
     subscriber: Subject(Event),
     waiter: Option(Waiter),
+    /// Next ref to mint. Refs are minted inside the actor, in the same handler
+    /// that sends the frame carrying them, so ref order and send order cannot
+    /// diverge.
+    next_ref: Int,
     /// True once the socket is known to be gone. The actor deliberately stays
     /// alive in this state so that a caller who was mid-flight gets
     /// `ChannelClosed` back rather than having its message vanish into a dead
@@ -116,6 +135,7 @@ pub fn start(
             codec: codec,
             subscriber: subscriber,
             waiter: None,
+            next_ref: 1,
             gone: False,
           ))
           |> actor.selecting(selector)
@@ -137,33 +157,45 @@ pub fn start(
   }
 }
 
-/// Hand outbound text to the socket. Fire-and-forget.
+/// Push an event to the socket. Fire-and-forget.
 ///
 /// There is no synchronous result: a send that fails takes the socket down,
 /// which the subscriber observes as an error event. Not needing a reply is
 /// what keeps the outbound path to a single hop.
 @internal
-pub fn send(socket: Socket, text: String) -> Nil {
-  process.send(socket.subject, Send(text))
+pub fn push(
+  socket: Socket,
+  join_ref: String,
+  topic: String,
+  event: String,
+  payload: json.Json,
+) -> Nil {
+  process.send(socket.subject, Push(join_ref, topic, event, payload))
 }
 
-/// Send outbound text and block until the reply carrying `ref` arrives.
+/// Ask the socket to emit one heartbeat frame. Fire-and-forget.
+@internal
+pub fn heartbeat(socket: Socket) -> Nil {
+  process.send(socket.subject, Heartbeat)
+}
+
+/// Join a topic and block until the server replies.
 ///
 /// The reply is routed to this caller instead of to the subscriber. Frames
 /// that arrive in the meantime still reach the subscriber — they are not
 /// dropped.
 @internal
-pub fn send_awaiting_reply(
+pub fn join(
   socket: Socket,
-  ref: String,
-  text: String,
+  topic: String,
+  payload: json.Json,
   timeout: Int,
-) -> Result(Incoming, AquamarineError) {
+) -> Result(Joined, AquamarineError) {
   let reply_to = process.new_subject()
-  process.send(socket.subject, SendAwaitingReply(ref, text, reply_to))
+  process.send(socket.subject, Join(topic, payload, reply_to))
 
   case process.receive(reply_to, timeout) {
-    Ok(event) -> event
+    Ok(result) -> result
     Error(Nil) -> Error(error.ReplyTimeout)
   }
 }
@@ -184,33 +216,52 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
   case msg {
     Inbound(frame) -> handle_frame(state, frame)
 
-    Send(text) ->
+    Push(join_ref, topic, event, payload) ->
       case state.gone {
         True -> actor.continue(state)
-        False ->
+        False -> {
+          let #(ref, state) = mint_ref(state)
+          let text =
+            state.codec.encode_push(join_ref, ref, topic, event, payload)
           case state.transport.send_text(text) {
             Ok(Nil) -> actor.continue(state)
             Error(err) -> actor.continue(lose_socket(state, err))
           }
+        }
       }
 
-    SendAwaitingReply(ref, text, reply_to) ->
+    Join(topic, payload, reply_to) ->
       case state.gone {
         True -> {
           process.send(reply_to, Error(error.ChannelClosed))
           actor.continue(state)
         }
-        False ->
+        False -> {
+          let #(join_ref, state) = mint_ref(state)
+          let text = state.codec.encode_join(join_ref, topic, payload)
           case state.transport.send_text(text) {
             Ok(Nil) ->
               actor.continue(
-                State(..state, waiter: Some(Waiter(ref, reply_to))),
+                State(..state, waiter: Some(Waiter(join_ref, reply_to))),
               )
             Error(err) -> {
               process.send(reply_to, Error(err))
               actor.continue(lose_socket(state, err))
             }
           }
+        }
+      }
+
+    Heartbeat ->
+      case state.gone {
+        True -> actor.continue(state)
+        False -> {
+          let #(ref, state) = mint_ref(state)
+          case state.transport.send_text(state.codec.encode_heartbeat(ref)) {
+            Ok(Nil) -> actor.continue(state)
+            Error(err) -> actor.continue(lose_socket(state, err))
+          }
+        }
       }
 
     Close(reply_to) -> {
@@ -264,7 +315,14 @@ fn route(state: State, incoming: Incoming) -> actor.Next(State, Message) {
     Some(waiter) ->
       case state.codec.matches_reply(incoming, waiter.ref) {
         True -> {
-          process.send(waiter.reply_to, Ok(incoming))
+          // The actor owns the codec, so it is also the thing that knows how
+          // to read a reply's status. The caller gets a verdict, not a frame
+          // to interpret.
+          let result = case state.codec.reply_status(incoming) {
+            Ok(Nil) -> Ok(Joined(waiter.ref, incoming))
+            Error(reason) -> Error(error.JoinRejected(reason))
+          }
+          process.send(waiter.reply_to, result)
           actor.continue(State(..state, waiter: None))
         }
         False -> {
@@ -308,4 +366,9 @@ fn lose_socket(state: State, err: AquamarineError) -> State {
       State(..state, waiter: None, gone: True)
     }
   }
+}
+
+/// Take the next ref. Monotonic and unique for the life of the socket.
+fn mint_ref(state: State) -> #(String, State) {
+  #(int.to_string(state.next_ref), State(..state, next_ref: state.next_ref + 1))
 }

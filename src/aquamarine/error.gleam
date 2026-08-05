@@ -29,7 +29,7 @@ pub type AquamarineError {
   /// Waited for a reply matching an outbound ref but it never arrived within
   /// the configured timeout.
   ReplyTimeout
-  /// An internal actor or system failure (e.g. failing to start the ref
-  /// counter or heartbeat actor) prevented the channel from initializing.
+  /// An internal actor or system failure (e.g. failing to start the socket or
+  /// heartbeat actor) prevented the channel from initializing.
   InternalError(reason: String)
 }
