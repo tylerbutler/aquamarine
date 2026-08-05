@@ -1,21 +1,24 @@
 //// Channel client lifecycle.
 ////
-//// A `Channel` wraps a WebSocket transport joined to a single topic, plus the
-//// codec, ref counter, and background heartbeat needed to keep the channel
-//// healthy.
+//// A `Channel` is a handle onto a running socket actor joined to a single
+//// topic, plus the codec, ref counter, and background heartbeat needed to
+//// keep the channel healthy. The socket itself lives in its own process; the
+//// channel holds a subject that inbound events are delivered to.
 ////
 //// ## Process ownership
 ////
-//// The inbound frame subject is owned by the process that called
-//// [`connect`](#connect). Only that process may call [`receive`](#receive).
-//// [`push`](#push) and [`close`](#close) are safe to call from any process,
-//// since the underlying `send_text` is fire-and-forget.
+//// The events subject is owned by the process that called
+//// [`connect`](#connect), and only that process may call
+//// [`receive`](#receive) — a subject can only be received from by the process
+//// that created it. [`push`](#push) and [`close`](#close) are safe to call
+//// from any process, since they are messages to the socket actor.
 
 import aquamarine/codec.{type Codec, type Incoming}
 import aquamarine/error.{type AquamarineError}
 import aquamarine/heartbeat
 import aquamarine/ref
-import aquamarine/transport.{type Connector, type Frame, type Transport}
+import aquamarine/socket.{type Socket}
+import aquamarine/transport.{type Connector}
 import gleam/erlang/process.{type Subject}
 import gleam/json
 import gleam/result
@@ -23,15 +26,17 @@ import gleam/result
 /// Default heartbeat interval, matching the Phoenix JS client.
 const default_heartbeat_ms: Int = 30_000
 
-/// How long [`receive`](#receive) waits for the next inbound frame before
-/// reporting a transport timeout. Matches the per-frame timeout Gluegun
-/// applied when the channel pulled frames directly.
+/// How long [`receive`](#receive) waits for the next inbound event before
+/// reporting a transport timeout.
 const receive_timeout_ms: Int = 5000
+
+/// How long [`connect`](#connect) waits for the join reply.
+const join_timeout_ms: Int = 5000
 
 pub opaque type Channel {
   Channel(
-    transport: Transport,
-    inbound: Subject(Frame),
+    socket: Socket,
+    events: Subject(socket.Event),
     topic: String,
     join_ref: String,
     counter: ref.Counter,
@@ -74,40 +79,21 @@ pub fn connect_with(
   codec: Codec,
   heartbeat_ms: Int,
 ) -> Result(Channel, AquamarineError) {
-  let inbound = process.new_subject()
-  use tx <- result.try(connector(inbound))
+  let events = process.new_subject()
+  use sock <- result.try(socket.start(connector, codec, events))
 
-  use counter <- result.try(start_counter(tx))
+  use counter <- result.try(start_counter(sock))
 
-  use join_ref <- result.try(next_join_ref(tx, counter))
+  use join_ref <- result.try(next_join_ref(sock, counter))
   let join_frame = codec.encode_join(join_ref, topic, payload)
 
-  use _ <- result.try(send_join(tx, counter, join_frame))
+  use _ <- result.try(join(sock, counter, join_ref, join_frame, codec))
 
-  use _ <- result.try(await_join_reply_with_cleanup(
-    tx,
-    inbound,
-    counter,
-    join_ref,
-    codec,
-  ))
-
-  let send_fn = fn(text: String) -> Result(Nil, Nil) {
-    tx.send_text(text)
-    |> result.map_error(fn(_) { Nil })
-  }
-
-  use hb <- result.try(start_heartbeat(
-    tx,
-    counter,
-    send_fn,
-    codec,
-    heartbeat_ms,
-  ))
+  use hb <- result.try(start_heartbeat(sock, counter, codec, heartbeat_ms))
 
   Ok(Channel(
-    transport: tx,
-    inbound: inbound,
+    socket: sock,
+    events: events,
     topic: topic,
     join_ref: join_ref,
     counter: counter,
@@ -118,189 +104,125 @@ pub fn connect_with(
 
 /// Push an event into the channel. Refs are assigned automatically.
 ///
-/// Returns `Ok(Nil)` once the frame is handed to the transport. This does
-/// **not** wait for a reply.
-pub fn push(
-  channel: Channel,
-  event: String,
-  payload: json.Json,
-) -> Result(Nil, AquamarineError) {
-  use ref <- result.try(
-    ref.next(channel.counter)
-    |> result.map_error(fn(_) { error.ChannelClosed }),
-  )
-  let text =
-    channel.codec.encode_push(
-      channel.join_ref,
-      ref,
-      channel.topic,
-      event,
-      payload,
-    )
-  channel.transport.send_text(text)
+/// Fire-and-forget: the frame is handed to the socket actor and this returns
+/// immediately. It does not wait for a reply, and it cannot report a delivery
+/// failure — a send that fails takes the socket down, which surfaces on the
+/// next [`receive`](#receive).
+pub fn push(channel: Channel, event: String, payload: json.Json) -> Nil {
+  case ref.next(channel.counter) {
+    Ok(ref) ->
+      socket.send(
+        channel.socket,
+        channel.codec.encode_push(
+          channel.join_ref,
+          ref,
+          channel.topic,
+          event,
+          payload,
+        ),
+      )
+    Error(Nil) -> Nil
+  }
 }
 
-/// Receive the next inbound frame on the channel.
+/// Receive the next inbound event on the channel.
 ///
 /// Skips heartbeat replies so the caller only sees real channel activity.
 /// Returns `Error(ChannelClosed)` if the server sent a close/error event, or
 /// the socket itself closed.
 pub fn receive(channel: Channel) -> Result(Incoming, AquamarineError) {
-  do_receive(channel)
-}
-
-fn do_receive(channel: Channel) -> Result(Incoming, AquamarineError) {
-  use frame <- result.try(next_frame(channel.inbound))
-
-  case frame {
-    transport.Text(text) ->
-      case channel.codec.decode(text) {
-        Ok(incoming) -> handle_incoming(channel, incoming)
-        Error(err) -> Error(error.DecodeFailed(err))
-      }
-    transport.Binary(_) -> do_receive(channel)
-    transport.Closed -> Error(error.ChannelClosed)
+  case process.receive(channel.events, receive_timeout_ms) {
+    Ok(event) -> event
+    Error(Nil) -> Error(error.Transport(error.Timeout))
   }
 }
 
-fn handle_incoming(
-  channel: Channel,
-  incoming: Incoming,
-) -> Result(Incoming, AquamarineError) {
-  case incoming.event {
-    e if e == channel.codec.close_event -> Error(error.ChannelClosed)
-    e if e == channel.codec.error_event -> Error(error.ChannelClosed)
-    e
-      if e == channel.codec.reply_event
-      && incoming.topic == channel.codec.heartbeat_topic
-    -> do_receive(channel)
-    _ -> Ok(incoming)
-  }
-}
-
-/// Close the channel and underlying transport. The heartbeat and counter
-/// actors are stopped first.
+/// Close the channel and underlying socket. The heartbeat and counter actors
+/// are stopped first.
 pub fn close(channel: Channel) -> Result(Nil, AquamarineError) {
   heartbeat.stop(channel.heartbeat)
   ref.stop(channel.counter)
-  channel.transport.close()
+  socket.close(channel.socket)
 }
 
-fn cleanup_connect(tx: Transport, counter: ref.Counter) -> Nil {
+fn cleanup_connect(sock: Socket, counter: ref.Counter) -> Nil {
   ref.stop(counter)
-  let _ = tx.close()
+  let _ = socket.close(sock)
   Nil
 }
 
-fn start_counter(tx: Transport) -> Result(ref.Counter, AquamarineError) {
+fn start_counter(sock: Socket) -> Result(ref.Counter, AquamarineError) {
   case ref.start() {
     Ok(counter) -> Ok(counter)
     Error(_) -> {
-      let _ = tx.close()
+      let _ = socket.close(sock)
       Error(error.InternalError("failed to start ref counter actor"))
     }
   }
 }
 
 fn next_join_ref(
-  tx: Transport,
+  sock: Socket,
   counter: ref.Counter,
 ) -> Result(String, AquamarineError) {
   case ref.next(counter) {
     Ok(join_ref) -> Ok(join_ref)
     Error(_) -> {
-      cleanup_connect(tx, counter)
+      cleanup_connect(sock, counter)
       Error(error.InternalError("failed to obtain join ref from counter"))
     }
   }
 }
 
-fn send_join(
-  tx: Transport,
-  counter: ref.Counter,
-  join_frame: String,
-) -> Result(Nil, AquamarineError) {
-  case tx.send_text(join_frame) {
-    Ok(_) -> Ok(Nil)
-    Error(err) -> {
-      cleanup_connect(tx, counter)
-      Error(err)
-    }
-  }
-}
-
-fn await_join_reply_with_cleanup(
-  tx: Transport,
-  inbound: Subject(Frame),
+/// Send the join frame and block on its reply.
+///
+/// The socket actor routes the matching reply here; anything else that arrives
+/// in the meantime goes to the events subject and waits there. That is the
+/// whole point of the actor — the old blocking `receive` had nowhere to put
+/// those frames and silently discarded them.
+fn join(
+  sock: Socket,
   counter: ref.Counter,
   join_ref: String,
+  join_frame: String,
   codec: Codec,
 ) -> Result(Nil, AquamarineError) {
-  case await_join_reply(inbound, join_ref, codec) {
-    Ok(_) -> Ok(Nil)
+  let result = case
+    socket.send_awaiting_reply(sock, join_ref, join_frame, join_timeout_ms)
+  {
+    Ok(incoming) ->
+      case codec.reply_status(incoming) {
+        Ok(Nil) -> Ok(Nil)
+        Error(reason) -> Error(error.JoinRejected(reason))
+      }
+    Error(err) -> Error(err)
+  }
+
+  case result {
+    Ok(Nil) -> Ok(Nil)
     Error(err) -> {
-      cleanup_connect(tx, counter)
+      cleanup_connect(sock, counter)
       Error(err)
     }
   }
 }
 
 fn start_heartbeat(
-  tx: Transport,
+  sock: Socket,
   counter: ref.Counter,
-  send_fn: fn(String) -> Result(Nil, Nil),
   codec: Codec,
   interval_ms: Int,
 ) -> Result(heartbeat.Heartbeat, AquamarineError) {
+  let send_fn = fn(text: String) -> Result(Nil, Nil) {
+    socket.send(sock, text)
+    Ok(Nil)
+  }
+
   case heartbeat.start(send_fn, interval_ms, counter, codec) {
     Ok(hb) -> Ok(hb)
     Error(_) -> {
-      cleanup_connect(tx, counter)
+      cleanup_connect(sock, counter)
       Error(error.InternalError("failed to start heartbeat actor"))
     }
   }
-}
-
-fn await_join_reply(
-  inbound: Subject(Frame),
-  join_ref: String,
-  codec: Codec,
-) -> Result(Nil, AquamarineError) {
-  use frame <- result.try(next_frame(inbound))
-
-  case frame {
-    transport.Text(text) ->
-      case codec.decode(text) {
-        Ok(incoming) -> match_join_reply(inbound, join_ref, incoming, codec)
-        Error(err) -> Error(error.DecodeFailed(err))
-      }
-    transport.Closed -> Error(error.ChannelClosed)
-    transport.Binary(_) -> await_join_reply(inbound, join_ref, codec)
-  }
-}
-
-fn match_join_reply(
-  inbound: Subject(Frame),
-  join_ref: String,
-  incoming: Incoming,
-  codec: Codec,
-) -> Result(Nil, AquamarineError) {
-  case codec.matches_reply(incoming, join_ref) {
-    True ->
-      case codec.reply_status(incoming) {
-        Ok(Nil) -> Ok(Nil)
-        Error(reason) -> Error(error.JoinRejected(reason))
-      }
-    False -> await_join_reply(inbound, join_ref, codec)
-  }
-}
-
-/// Block for the next pushed frame.
-///
-/// The transport can no longer report a read error synchronously — a dead
-/// socket arrives as [`transport.Closed`](aquamarine/transport.html#Frame) —
-/// so the only failure left here is running out of patience.
-fn next_frame(inbound: Subject(Frame)) -> Result(Frame, AquamarineError) {
-  process.receive(inbound, receive_timeout_ms)
-  |> result.replace_error(error.Transport(error.Timeout))
 }
