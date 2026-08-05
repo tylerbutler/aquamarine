@@ -30,6 +30,7 @@ pub type Codec {
     /// server rejected the join.
     reply_status: fn(Incoming) -> Result(Nil, String),
     join_event: String,
+    leave_event: String,
     reply_event: String,
     close_event: String,
     error_event: String,

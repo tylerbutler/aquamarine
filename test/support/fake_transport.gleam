@@ -78,6 +78,24 @@ pub fn enqueue_text(fake: FakeSocket, text: String) -> Nil {
   process.send(fake.subject, Deliver(transport.Text(text)))
 }
 
+/// Deliver a text frame after a delay, from another process.
+///
+/// Once the fake has released its buffer, `enqueue_text` delivers
+/// *immediately* — which is too early for a reply that is supposed to answer a
+/// frame the channel has not sent yet. Use this to script a server that
+/// answers something already in flight.
+pub fn enqueue_text_after(
+  fake: FakeSocket,
+  delay_ms: Int,
+  text: String,
+) -> Nil {
+  process.spawn(fn() {
+    process.sleep(delay_ms)
+    enqueue_text(fake, text)
+  })
+  Nil
+}
+
 pub fn enqueue_binary(fake: FakeSocket, data: BitArray) -> Nil {
   process.send(fake.subject, Deliver(transport.Binary(data)))
 }

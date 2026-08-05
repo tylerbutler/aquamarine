@@ -12,6 +12,7 @@ pub fn codec() -> aquamarine_codec.Codec {
     matches_reply: matches_reply,
     reply_status: reply_status,
     join_event: roost_frame.join_event,
+    leave_event: roost_frame.leave_event,
     reply_event: roost_frame.reply_event,
     close_event: roost_frame.close_event,
     error_event: roost_frame.error_event,

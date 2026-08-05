@@ -67,6 +67,7 @@ pub fn classifies_all_shared_invalid_frame_fixtures_test() {
 pub fn exposes_phoenix_system_event_names_test() {
   let codec = phoenix.codec()
   assert codec.join_event == fixtures.join_event
+  assert codec.leave_event == fixtures.leave_event
   assert codec.reply_event == fixtures.reply_event
   assert codec.close_event == fixtures.close_event
   assert codec.error_event == fixtures.error_event

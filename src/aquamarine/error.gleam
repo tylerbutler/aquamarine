@@ -24,6 +24,13 @@ pub type AquamarineError {
   JoinRejected(reason: String)
   /// The server closed the channel.
   ChannelClosed
+  /// This socket has already joined that topic. Silently replacing the routing
+  /// entry would orphan the first channel's subject with no error raised
+  /// anywhere, so joining twice is an error rather than a takeover.
+  AlreadyJoined(topic: String)
+  /// The topic is reserved by the protocol — the heartbeat topic — and cannot
+  /// be joined by a channel.
+  ReservedTopic(topic: String)
   /// An inbound wire frame could not be decoded.
   DecodeFailed(codec.DecodeError)
   /// Waited for a reply matching an outbound ref but it never arrived within

@@ -7,6 +7,7 @@ import aquamarine
 import aquamarine/channel
 import aquamarine/error
 import aquamarine/phoenix
+import aquamarine/socket
 import beryl
 import beryl/channel as bchannel
 import beryl/supervisor
@@ -131,6 +132,79 @@ pub fn exposes_the_live_accepted_join_reply_test() {
   assert decode_welcome(reply.payload) == Ok(True)
 
   let assert Ok(Nil) = aquamarine.close(ch)
+}
+
+/// One connection, two topics, against a real server. Each channel sees only
+/// its own traffic, and leaving one leaves the other working.
+pub fn serves_two_topics_over_one_socket_test() {
+  let server = start_server()
+
+  let assert Ok(sock) =
+    socket.connect(
+      host: "127.0.0.1",
+      port: server.port,
+      path: test_path,
+      codec: phoenix.codec(),
+    )
+
+  let assert Ok(lobby) = channel.join(sock, "test:lobby", json.object([]), 5000)
+  let assert Ok(echoes) = channel.join(sock, "test:echo", json.object([]), 5000)
+
+  // A broadcast to lobby must not appear on echo.
+  process.sleep(50)
+  beryl.broadcast(
+    server.channels,
+    "test:lobby",
+    "tick",
+    json.object([#("n", json.int(7))]),
+  )
+
+  let assert Ok(incoming) = channel.receive(lobby)
+  assert incoming.topic == "test:lobby"
+  assert incoming.event == "tick"
+
+  // The echo topic's own round-trip still works on the same connection.
+  let assert Ok(reply) =
+    channel.push_and_await_reply(
+      echoes,
+      "say",
+      json.object([#("body", json.string("multiplexed"))]),
+      5000,
+    )
+  assert reply.topic == "test:echo"
+  assert decode_body(reply.payload) == Ok("multiplexed")
+
+  // Leaving lobby leaves the echo channel — and the connection — alone.
+  let assert Ok(Nil) = channel.leave(lobby)
+  let assert Ok(reply2) =
+    channel.push_and_await_reply(
+      echoes,
+      "say",
+      json.object([#("body", json.string("after_leave"))]),
+      5000,
+    )
+  assert decode_body(reply2.payload) == Ok("after_leave")
+
+  let assert Ok(Nil) = socket.close(sock)
+}
+
+/// Joining the same topic twice on one socket is an error, not a takeover.
+pub fn rejects_a_duplicate_join_on_one_socket_test() {
+  let server = start_server()
+
+  let assert Ok(sock) =
+    socket.connect(
+      host: "127.0.0.1",
+      port: server.port,
+      path: test_path,
+      codec: phoenix.codec(),
+    )
+
+  let assert Ok(_) = channel.join(sock, "test:lobby", json.object([]), 5000)
+  assert channel.join(sock, "test:lobby", json.object([]), 5000)
+    == Error(error.AlreadyJoined("test:lobby"))
+
+  let assert Ok(Nil) = socket.close(sock)
 }
 
 pub fn surfaces_a_server_side_join_rejection_test() {
