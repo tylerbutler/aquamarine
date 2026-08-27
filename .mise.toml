@@ -2,3 +2,4 @@
 erlang = "latest"
 gleam = "1.18.1"
 rebar = "latest"
+"github:tylerbutler/trellis" = "0.11.2"
