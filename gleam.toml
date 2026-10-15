@@ -22,3 +22,17 @@ beryl = { git = "https://github.com/tylerbutler/beryl.git", ref = "81f799eb838d0
 beryl_mist = { git = "https://github.com/tylerbutler/beryl.git", ref = "81f799eb838d0c30ba089e41899282e82c3ccd49", path = "packages/beryl_mist" }
 mist = ">= 6.0.0 and < 7.0.0"
 phoenix_channel_fixtures = { git = "https://github.com/tylerbutler/phoenix_channel_fixtures.git", ref = "7daccb856d17db6278980277237c201b2acdcdf1" }
+
+# Workspace configuration for trellis. This table's presence is what marks the
+# workspace root; every key in it is optional.
+#
+# Members are auto-discovered — every gleam.toml git knows about, outside
+# build/. Add `members = ["packages/*"]` only to pin them to something
+# narrower than that.
+#
+# Task exclusions, custom tasks, tag formats, and changelog kinds are all
+# configured here too: https://trellis.tylerbutler.com/docs/configuration/
+[tools.trellis]
+
+[tools.trellis.publish.lifecycle]
+default = "git_only"
