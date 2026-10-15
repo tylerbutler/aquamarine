@@ -14,6 +14,10 @@
 //// heartbeat. The socket keeps a routing table keyed by topic; a frame is
 //// delivered to the channel that owns its topic and to nobody else.
 ////
+//// A codec with `topicless_events` enabled permits only one joined topic.
+//// Empty-topic events route to that channel; heartbeat replies still use
+//// the codec's separate reserved topic.
+////
 //// The socket does **not** close itself when the last channel leaves. A
 //// transient zero-channel window is a normal thing to pass through, not a
 //// reason to drop the connection. Closing is [`close`](#close), explicitly.
@@ -81,7 +85,7 @@
 //// Everything in this module is safe to call from any process.
 
 import aquamarine/backoff.{type Backoff}
-import aquamarine/codec.{type Codec, type Incoming}
+import aquamarine/codec.{type Codec, type Incoming, Incoming}
 import aquamarine/error.{type AquamarineError}
 import aquamarine/transport.{type Connector, type Transport}
 import gleam/dict.{type Dict}
@@ -216,7 +220,7 @@ pub opaque type Message {
 type Waiter {
   JoinWaiter(topic: String, reply_to: Subject(Result(Joined, AquamarineError)))
   RejoinWaiter(topic: String)
-  ReplyWaiter(reply_to: Subject(Event))
+  ReplyWaiter(topic: String, reply_to: Subject(Event))
 }
 
 /// A joined topic: where its frames go, and what it takes to join it again.
@@ -664,7 +668,11 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
           let state =
             State(
               ..state,
-              pending: dict.insert(state.pending, ref, ReplyWaiter(reply_to)),
+              pending: dict.insert(
+                state.pending,
+                ref,
+                ReplyWaiter(topic, reply_to),
+              ),
             )
           state.codec.encode_push(joined.join_ref, ref, topic, event, payload)
           |> tx.send_text
@@ -687,7 +695,7 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
       actor.continue(
         drop_waiter(state, fn(waiter) {
           case waiter {
-            ReplyWaiter(rt) -> rt == reply_to
+            ReplyWaiter(_, rt) -> rt == reply_to
             _ -> False
           }
         }),
@@ -753,7 +761,7 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
       cancel_heartbeat(state)
       // A deliberate close is still a close as far as anyone waiting on a
       // reply — or holding a channel — is concerned. And it never reconnects.
-      fail_pending(state, error.ChannelClosed)
+      let _ = fail_pending(state, error.ChannelClosed)
       broadcast(state, error.ChannelClosed)
       let result = case state.conn {
         // Close the transport even when the connection is already known to be
@@ -794,7 +802,16 @@ fn join_refusal(state: State, topic: String) -> Option(AquamarineError) {
     // route heartbeat replies into application code.
     _, _, t if t == state.codec.heartbeat_topic ->
       Some(error.ReservedTopic(topic))
-    _, _, _ -> None
+    _, _, _ ->
+      case state.codec.topicless_events {
+        True ->
+          case dict.keys(state.topics) {
+            [joined_topic, ..] ->
+              Some(error.TopiclessSocketOccupied(joined_topic))
+            [] -> None
+          }
+        False -> None
+      }
   }
 }
 
@@ -814,8 +831,7 @@ fn handle_frame(
         Error(err) -> {
           let err = error.DecodeFailed(err)
           broadcast(state, err)
-          fail_pending(state, err)
-          actor.continue(State(..state, pending: dict.new()))
+          actor.continue(fail_pending(state, err))
         }
       }
 
@@ -844,7 +860,7 @@ fn begin_reconnect(
   // Pending replies belong to the connection that just died. Failing them is
   // the only honest answer — they must never be re-correlated against the new
   // connection.
-  fail_pending(state, error.ChannelClosed)
+  let state = fail_pending(state, error.ChannelClosed)
   notify(state, Disconnected(reason))
 
   // Topics are kept: they are what a rejoin is made of.
@@ -927,7 +943,22 @@ fn route(state: State, incoming: Incoming) -> actor.Next(State, Message) {
       let state = State(..state, pending: dict.delete(state.pending, ref))
       actor.continue(deliver(state, waiter, ref, incoming))
     }
-    Error(Nil) -> actor.continue(to_channel(state, incoming))
+    Error(Nil) -> {
+      let stale_reply = case state.codec.topicless_events, incoming.ref {
+        True, Some(reference) -> state.codec.matches_reply(incoming, reference)
+        False, _ | True, None -> False
+      }
+      case stale_reply {
+        True -> {
+          logging.log(
+            logging.Debug,
+            "aquamarine: dropping stale topicless reply",
+          )
+          actor.continue(state)
+        }
+        False -> actor.continue(to_channel(state, incoming))
+      }
+    }
   }
 }
 
@@ -992,7 +1023,7 @@ fn deliver(
 
     // A push reply carrying a non-ok status is an ordinary reply. Interpreting
     // it is the caller's business, not ours.
-    ReplyWaiter(reply_to) -> {
+    ReplyWaiter(_, reply_to) -> {
       process.send(reply_to, Ok(incoming))
       state
     }
@@ -1006,6 +1037,18 @@ fn deliver(
 /// so they fall out here as ordinary unknown-topic drops — no special case
 /// needed.
 fn to_channel(state: State, incoming: Incoming) -> State {
+  let incoming = case
+    state.codec.topicless_events
+    && incoming.topic == ""
+    && incoming.topic != state.codec.heartbeat_topic
+  {
+    True ->
+      case dict.keys(state.topics) {
+        [topic] -> Incoming(..incoming, topic: topic)
+        _ -> incoming
+      }
+    False -> incoming
+  }
   case dict.get(state.topics, incoming.topic) {
     Error(Nil) -> {
       logging.log(
@@ -1021,7 +1064,7 @@ fn to_channel(state: State, incoming: Incoming) -> State {
         // so a later reconnect does not resurrect it.
         e if e == state.codec.close_event || e == state.codec.error_event -> {
           process.send(joined.events, Error(error.ChannelClosed))
-          State(..state, topics: dict.delete(state.topics, incoming.topic))
+          close_topic(state, incoming.topic)
         }
         _ -> {
           process.send(joined.events, Ok(incoming))
@@ -1029,6 +1072,25 @@ fn to_channel(state: State, incoming: Incoming) -> State {
         }
       }
   }
+}
+
+fn close_topic(state: State, topic: String) -> State {
+  let pending =
+    dict.filter(state.pending, fn(_reference, waiter) {
+      case waiter {
+        JoinWaiter(waiter_topic, reply_to) if waiter_topic == topic -> {
+          process.send(reply_to, Error(error.ChannelClosed))
+          False
+        }
+        ReplyWaiter(waiter_topic, reply_to) if waiter_topic == topic -> {
+          process.send(reply_to, Error(error.ChannelClosed))
+          False
+        }
+        RejoinWaiter(waiter_topic) if waiter_topic == topic -> False
+        JoinWaiter(_, _) | ReplyWaiter(_, _) | RejoinWaiter(_) -> True
+      }
+    })
+  State(..state, topics: dict.delete(state.topics, topic), pending: pending)
 }
 
 // -- plumbing ---------------------------------------------------------------
@@ -1047,14 +1109,22 @@ fn notify(state: State, status: Status) -> Nil {
 
 /// Fail everyone waiting on a reply. A caller blocked in
 /// `push_and_await_reply` must never outlive the connection it is waiting on.
-fn fail_pending(state: State, err: AquamarineError) -> Nil {
-  use waiter <- list.each(dict.values(state.pending))
-  case waiter {
-    JoinWaiter(_, reply_to) -> process.send(reply_to, Error(err))
-    ReplyWaiter(reply_to) -> process.send(reply_to, Error(err))
-    // Nobody is blocked on a rejoin.
-    RejoinWaiter(_) -> Nil
-  }
+fn fail_pending(state: State, err: AquamarineError) -> State {
+  let topics =
+    list.fold(dict.values(state.pending), state.topics, fn(topics, waiter) {
+      case waiter {
+        JoinWaiter(topic, reply_to) -> {
+          process.send(reply_to, Error(err))
+          dict.delete(topics, topic)
+        }
+        ReplyWaiter(_, reply_to) -> {
+          process.send(reply_to, Error(err))
+          topics
+        }
+        RejoinWaiter(_) -> topics
+      }
+    })
+  State(..state, topics: topics, pending: dict.new())
 }
 
 /// Remove the pending entry whose waiter matches.

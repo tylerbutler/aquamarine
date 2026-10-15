@@ -17,6 +17,7 @@ pub fn codec() -> aquamarine_codec.Codec {
     close_event: roost_frame.close_event,
     error_event: roost_frame.error_event,
     heartbeat_topic: roost_frame.heartbeat_topic,
+    topicless_events: False,
   )
 }
 

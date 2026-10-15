@@ -35,5 +35,9 @@ pub type Codec {
     close_event: String,
     error_event: String,
     heartbeat_topic: String,
+    /// Route empty-topic events to the socket's only joined topic. Reject
+    /// additional joins until that topic leaves or closes. Heartbeat replies
+    /// must use a distinct, nonempty `heartbeat_topic`.
+    topicless_events: Bool,
   )
 }

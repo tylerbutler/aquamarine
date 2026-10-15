@@ -45,6 +45,9 @@ pub type AquamarineError {
   /// entry would orphan the first channel's subject with no error raised
   /// anywhere, so joining twice is an error rather than a takeover.
   AlreadyJoined(topic: String)
+  /// A topicless codec supports one topic per socket. This topic already
+  /// occupies the socket, including while its join is pending.
+  TopiclessSocketOccupied(topic: String)
   /// The topic is reserved by the protocol — the heartbeat topic — and cannot
   /// be joined by a channel.
   ReservedTopic(topic: String)
