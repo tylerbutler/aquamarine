@@ -26,13 +26,14 @@ phoenix_channel_fixtures = { git = "https://github.com/tylerbutler/phoenix_chann
 # Workspace configuration for trellis. This table's presence is what marks the
 # workspace root; every key in it is optional.
 #
-# Members are auto-discovered — every gleam.toml git knows about, outside
-# build/. Add `members = ["packages/*"]` only to pin them to something
-# narrower than that.
-#
 # Task exclusions, custom tasks, tag formats, and changelog kinds are all
 # configured here too: https://trellis.tylerbutler.com/docs/configuration/
 [tools.trellis]
+members = ["."]
+
+[tools.trellis.publish]
+exact_tag_format = "v{version}"
+package_tags = ["exact"]
 
 [tools.trellis.publish.lifecycle]
 default = "git_only"

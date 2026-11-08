@@ -5,19 +5,32 @@ on:
     branches:
       - master
       - main
+    tags: ['v*']
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
           gleam-version: "1.18.1"
           rebar3-version: "3"
-          # elixir-version: "1"
+      - name: Install pinned Trellis
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+        with:
+          install_args: github:tylerbutler/trellis
+          add_shims_to_path: false
       - run: gleam deps download
       - run: gleam test
       - run: gleam format --check src test
+      - run: gleam check && gleam build --warnings-as-errors
+      - run: mise exec github:tylerbutler/trellis -- trellis doctor
+      - run: python3 -B -m unittest discover -s test -p '*_test.py'
