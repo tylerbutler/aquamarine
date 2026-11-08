@@ -33,6 +33,10 @@ build-strict:
 test:
     trellis run test
 
+# Check release trust boundaries without remote writes
+test-release:
+    python3 -B -m unittest discover -s test -p '*_test.py'
+
 # === CODE QUALITY ===
 
 # Format source code
@@ -56,22 +60,34 @@ docs:
 # === CHANGELOG ===
 
 # Create a new changelog entry
-change:
-    trellis changelog new
+[positional-arguments]
+change *ARGS:
+    trellis changelog new "$@"
 
 # Preview unreleased version bumps and changelog
-changelog-preview:
-    trellis version plan
+[positional-arguments]
+changelog-preview *ARGS:
+    trellis version plan "$@"
 
 # === RELEASE ===
 
 # Apply version bumps and regenerate CHANGELOG.md
-version-apply:
-    trellis version apply
+[positional-arguments]
+version-apply *ARGS:
+    trellis version apply "$@"
 
-# Create and push missing release tags
+# Create/update the release PR; preserve pending intent and candidate mode
+[positional-arguments]
+release-pr *ARGS:
+    trellis release pr --base main --branch release/pending --resume --auto-pre --skip-unchanged "$@"
+
+# Preview tags without creating or pushing them
+tag-plan:
+    trellis tag plan
+
+# Create/push missing tags and GitHub releases; run only at an approved release merge
 tag:
-    trellis tag create --push
+    trellis tag create --github-release
 
 # === MAINTENANCE ===
 
@@ -85,8 +101,8 @@ doctor:
 
 # === CI ===
 
-# Run all CI checks (format, check, test, build)
-ci: format-check check test build-strict
+# Run all CI checks (format, check, tests, build, workspace)
+ci: format-check check test test-release build-strict doctor
 
 # Alias for PR checks
 alias pr := ci

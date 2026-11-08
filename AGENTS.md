@@ -12,10 +12,28 @@ Aquamarine is a Gleam library for an Erlang-targeted, protocol-agnostic Beryl-st
 - Format: `gleam format src test` or `just format`
 - Check formatting: `gleam format --check src test` or `just format-check`
 - Type check: `gleam check` or `just check`
-- Full PR/CI check: `just ci` (`format-check`, `check`, `test`, `build-strict`)
+- Full PR/CI check: `just ci` (`format-check`, `check`, `test`, `test-release`, `build-strict`, `doctor`)
 - Build docs: `gleam docs build` or `just docs`
 
-CI currently runs on OTP 28 and Gleam 1.18.1, then executes `gleam deps download`, `gleam test`, and `gleam format --check src test`.
+CI runs on OTP 28 and Gleam 1.18.1 with pinned Trellis, and checks tests,
+formatting, types, strict builds, workspace invariants, and release trust logic.
+It also runs on `v*` tag pushes.
+
+## Releases
+
+- The root package is the only Trellis member. Releases are Git-only, with
+  immutable `v{version}` tags and GitHub Releases; never publish to Hex.
+- Use `just change` for user-facing changes, `just changelog-preview` for the
+  version plan, and `just tag-plan` for a read-only tag plan.
+- `just release-pr` writes a remote release PR using native resume, automatic
+  candidate continuation, and unchanged-content detection. Promotion requires
+  explicit `--pre none`. Preserve native release intent and candidate archives.
+- Release CI tags only the immutable merge commit of a merged same-repository
+  `release/pending` PR to `main`. Manual recovery requires that approved PR's
+  number, not an arbitrary ref. Never substitute current `main` for its merge.
+- `just tag` creates/pushes tags and GitHub Releases. It requires an approved
+  release merge and explicit authorization for remote writes. See README.md
+  for workflow dispatch, recovery, App secrets, and repository permissions.
 
 ## Architecture
 

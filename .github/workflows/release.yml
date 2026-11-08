@@ -1,0 +1,122 @@
+name: Trellis Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Prepare a release PR or recover an approved release"
+        type: choice
+        options: [prepare, recover]
+        default: prepare
+      pre:
+        description: "Candidate label (rc), stable promotion (none), or retain mode (empty)"
+        type: string
+        default: ""
+      version:
+        description: "Aquamarine target version before the prerelease suffix"
+        type: string
+        default: ""
+      release_pr:
+        description: "Merged release/pending PR number (required for recovery)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: trellis-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.action == 'prepare'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install pinned Trellis
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+        with:
+          install_args: github:tylerbutler/trellis
+
+      - name: Create or update release PR
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          INPUT_PRE: ${{ inputs.pre }}
+          INPUT_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          args=(--base main --branch release/pending --resume --auto-pre --skip-unchanged)
+          if [[ -n "$INPUT_PRE" ]]; then args+=(--pre "$INPUT_PRE"); fi
+          if [[ -n "$INPUT_VERSION" ]]; then args+=(--set "aquamarine=$INPUT_VERSION"); fi
+          trellis release pr "${args[@]}" --github-output >> "$GITHUB_OUTPUT"
+
+  tag:
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == 'refs/heads/main' && inputs.action == 'recover') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.merged == true &&
+       github.event.pull_request.base.ref == 'main' &&
+       github.event.pull_request.head.ref == 'release/pending' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Resolve approved release revision
+        id: approved
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_RELEASE_PR: ${{ inputs.release_pr }}
+        run: python3 -B scripts/release_revision.py >> "$GITHUB_OUTPUT"
+
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ steps.approved.outputs.revision }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install pinned Trellis
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+        with:
+          install_args: github:tylerbutler/trellis
+
+      - name: Create tags and GitHub release
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: trellis tag create --github-release
