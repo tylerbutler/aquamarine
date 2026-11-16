@@ -1,9 +1,0 @@
-[build]
-  command = "pnpm build"
-  publish = "dist"
-  # Only trigger builds when files in website/ change.
-  ignore = "sh website/scripts/netlify-ignore.sh"
-
-# Always build production deploys from main.
-[context.production]
-  ignore = "/bin/false"

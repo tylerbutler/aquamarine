@@ -36,6 +36,38 @@ let assert Ok(channel) =
   )
 ```
 
+## Website deployment
+
+Deploy the static Astro site in `website/` with Cloudflare Workers Static Assets.
+No Astro adapter or GitHub Actions workflow is needed.
+
+Connect this repository to a Worker named `aquamarine-docs` in Cloudflare
+**Workers & Pages**. Configure **Settings > Build** with these values:
+
+| Setting | Value |
+| --- | --- |
+| Production branch | `main` |
+| Root directory | `website` |
+| Build command | `pnpm build` |
+| Deploy command | `pnpm run deploy` |
+| Preview command | `pnpm exec wrangler versions upload` |
+| Build watch include paths (repository-relative) | `website/*` |
+| Build variables | `NODE_VERSION=24`, `PNPM_VERSION=10.33.4` |
+
+Enable builds for non-production branches to get preview URLs without changing
+the production deployment. Cloudflare installs dependencies from
+`website/pnpm-lock.yaml`.
+
+For a manual deployment, run `pnpm install --frozen-lockfile`, `pnpm build`, and
+`pnpm run deploy` from `website/` after you authenticate with `pnpm exec wrangler login`.
+Run `pnpm exec wrangler dev` after a build to check Workers asset routing locally.
+
+Before you switch hosts, check the deployed site on its `workers.dev` URL.
+Then remove the Netlify DNS record for `aquamarine.tylerbutler.com` and add that
+hostname under the Worker's **Settings > Domains & Routes > Custom Domain**.
+Keep the Astro `site` URL unchanged. Disable Netlify builds after the domain
+serves the Cloudflare deployment.
+
 ## Releases
 
 Aquamarine uses Trellis, pinned in `.mise.toml`, for Git-only releases. It creates
