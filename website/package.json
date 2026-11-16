@@ -17,6 +17,7 @@
 		"build": "astro build",
 		"check:astro": "astro check",
 		"clean": "rimraf dist *.tsbuildinfo *.done.build.log .astro",
+		"deploy": "wrangler deploy",
 		"dev": "astro dev",
 		"preview": "astro preview",
 		"start": "astro dev"
@@ -36,6 +37,7 @@
 	},
 	"devDependencies": {
 		"@fec/remark-a11y-emoji": "^4.0.2",
-		"rimraf": "^6.1.3"
+		"rimraf": "^6.1.3",
+		"wrangler": "^4.159.0"
 	}
 }
